@@ -1,0 +1,18 @@
+{
+  "name": "Codeck Mobile · 可视化蓝图编辑器",
+  "short_name": "Codeck",
+  "description": "移动端优先的可视化蓝图编程编辑器，Node.js 服务端编译与运行",
+  "start_url": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#0c1117",
+  "theme_color": "#0c1117",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}

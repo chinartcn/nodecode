@@ -1,0 +1,14 @@
+{
+  "name": "codeck-mobile",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "基于 codeck 理念的移动端可视化蓝图编辑器（Node.js 服务端编译与运行）",
+  "scripts": {
+    "start": "node server/index.js",
+    "dev": "node --watch server/index.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
