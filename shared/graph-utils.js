@@ -20,10 +20,19 @@ export function pinKey(dir, name) {
   return `${dir}:${name}`;
 }
 
+/**
+ * 节点布局只与节点类型有关，按类型缓存，避免每帧重复分配对象与数组。
+ * 返回对象为共享只读数据，请勿修改。
+ */
+const LAYOUT_CACHE = new Map();
+
 /** 计算节点尺寸与所有端点坐标（相对节点左上角） */
 export function getNodeLayout(node) {
   const def = getNodeDef(node?.name);
   if (!def) return null;
+
+  const cached = LAYOUT_CACHE.get(def.name);
+  if (cached) return cached;
 
   const rows = Math.max(0, ...def.pins.map((pin) => pin.row)) + 1;
   const height = NODE_HEADER_HEIGHT + rows * NODE_ROW_HEIGHT + NODE_BODY_PADDING;
@@ -33,14 +42,17 @@ export function getNodeLayout(node) {
     x: pin.dir === 'in' ? 0 : def.width,
     y: NODE_HEADER_HEIGHT + pin.row * NODE_ROW_HEIGHT + NODE_ROW_HEIGHT / 2,
   }));
+  const pinMap = new Map(pins.map((pin) => [pinKey(pin.dir, pin.name), pin]));
 
-  return { def, width: def.width, height, pins };
+  const layout = { def, width: def.width, height, pins, pinMap };
+  LAYOUT_CACHE.set(def.name, layout);
+  return layout;
 }
 
 export function getPinLayout(node, dir, name) {
   const layout = getNodeLayout(node);
   if (!layout) return null;
-  return layout.pins.find((pin) => pin.dir === dir && pin.name === name) || null;
+  return layout.pinMap.get(pinKey(dir, name)) || null;
 }
 
 export function getPinAbs(node, dir, name) {

@@ -32,6 +32,7 @@ body {
   overflow: hidden;
   overscroll-behavior: none;
   -webkit-tap-highlight-color: transparent;
+  -webkit-touch-callout: none;
   -webkit-font-smoothing: antialiased;
 }
 
@@ -68,10 +69,8 @@ button {
   gap: 10px;
   height: calc(54px + var(--safe-top));
   padding: var(--safe-top) 12px 0;
-  background: rgba(12, 17, 23, 0.92);
+  background: rgba(12, 17, 23, 0.98);
   border-bottom: 1px solid var(--line);
-  backdrop-filter: blur(14px);
-  -webkit-backdrop-filter: blur(14px);
 }
 
 .topbar .titles {
@@ -174,7 +173,8 @@ button {
   flex: 1;
   min-height: 0;
   overflow: hidden;
-  background: radial-gradient(120% 90% at 50% 0%, #111a24 0%, #0c1117 62%);
+  background: #0c1117;
+  contain: paint;
 }
 
 #canvas {
@@ -184,6 +184,8 @@ button {
   height: 100%;
   display: block;
   touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
 }
 
 .fab {
@@ -213,11 +215,10 @@ button {
   z-index: 6;
   display: flex;
   flex-direction: column;
-  background: rgba(21, 29, 39, 0.94);
+  background: rgba(21, 29, 39, 0.97);
   border: 1px solid var(--line);
   border-radius: 13px;
   overflow: hidden;
-  backdrop-filter: blur(10px);
 }
 
 .zoom-stack button {
@@ -287,7 +288,6 @@ button {
   background: rgba(22, 30, 41, 0.97);
   border: 1px solid var(--line);
   border-radius: 14px;
-  backdrop-filter: blur(12px);
   box-shadow: 0 10px 26px rgba(0, 0, 0, 0.4);
 }
 

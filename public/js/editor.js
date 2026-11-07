@@ -8,7 +8,6 @@
 
 import {
   NODE_HEADER_HEIGHT,
-  NODE_ROW_HEIGHT,
   NODE_TYPE_COLORS,
   getNodeDef,
 } from '/shared/node-defs.js';
@@ -17,7 +16,6 @@ import {
   generateId,
   getNodeLayout,
   getPinAbs,
-  getPinLayout,
   isPinConnected,
   normalizeGraph,
 } from '/shared/graph-utils.js';
@@ -42,13 +40,15 @@ function shadeColor(hex, amount) {
 export class BlueprintEditor {
   constructor(canvas, options = {}) {
     this.canvas = canvas;
-    this.ctx = canvas.getContext('2d');
+    // alpha:false 减少合成开销，desynchronized 降低触控绘制延迟
+    this.ctx = canvas.getContext('2d', { alpha: false, desynchronized: true });
     this.options = options;
 
     this.graph = normalizeGraph({ nodes: [], connections: [], variables: [] });
     this.view = { x: 40, y: 60, scale: 1 };
     this.size = { w: 1, h: 1 };
     this.dpr = 1;
+    this._rect = { left: 0, top: 0 };
 
     this.selectedId = null;
     this.pending = null;
@@ -59,6 +59,15 @@ export class BlueprintEditor {
     this.dirty = true;
     this._addCount = 0;
     this._raf = null;
+
+    // 性能相关缓存
+    this._textCache = new Map();
+    this._gridPattern = null;
+    this._gridStep = 0;
+    this._connectedPins = new Set();
+    this._connIndexDirty = true;
+    this._interacting = false;
+    this._interactTimer = null;
 
     this._bindEvents();
     this._resize();
@@ -73,6 +82,7 @@ export class BlueprintEditor {
     this.pending = null;
     this.down = null;
     this.pointers.clear();
+    this._connIndexDirty = true;
     this.dirty = true;
     this.options.onHint?.(null);
     if (options.fit !== false) this.fitView();
@@ -145,6 +155,7 @@ export class BlueprintEditor {
       (conn) => conn.fromNodeId !== nodeId && conn.toNodeId !== nodeId
     );
     if (this.selectedId === nodeId) this.selectedId = null;
+    this._connIndexDirty = true;
     this.dirty = true;
     this.notifyChange();
     this.options.onStructure?.();
@@ -164,6 +175,7 @@ export class BlueprintEditor {
     const result = buildConnection(this.graph, from, to);
     if (result.error) return { error: result.error };
     this.graph.connections = result.connections;
+    this._connIndexDirty = true;
     this.dirty = true;
     this.notifyChange();
     this.options.onStructure?.();
@@ -172,6 +184,7 @@ export class BlueprintEditor {
 
   removeConnection(connectionId) {
     this.graph.connections = this.graph.connections.filter((conn) => conn.id !== connectionId);
+    this._connIndexDirty = true;
     this.dirty = true;
     this.notifyChange();
     this.options.onStructure?.();
@@ -265,16 +278,18 @@ export class BlueprintEditor {
   _resize() {
     const rect = this.canvas.getBoundingClientRect();
     if (!rect.width || !rect.height) return;
-    this.dpr = Math.min(window.devicePixelRatio || 1, 2.5);
+    this.dpr = Math.min(window.devicePixelRatio || 1, 2);
     this.size = { w: rect.width, h: rect.height };
+    // canvas 相对视口的位置固定，缓存后避免每次 pointermove 触发重排
+    this._rect = { left: rect.left, top: rect.top };
     this.canvas.width = Math.round(rect.width * this.dpr);
     this.canvas.height = Math.round(rect.height * this.dpr);
+    this._gridPattern = null;
     this.dirty = true;
   }
 
   _screen(event) {
-    const rect = this.canvas.getBoundingClientRect();
-    return { x: event.clientX - rect.left, y: event.clientY - rect.top };
+    return { x: event.clientX - this._rect.left, y: event.clientY - this._rect.top };
   }
 
   _onPointerDown(event) {
@@ -287,6 +302,8 @@ export class BlueprintEditor {
     }
     const point = this._screen(event);
     this.pointers.set(event.pointerId, point);
+    this._interacting = true;
+    clearTimeout(this._interactTimer);
 
     if (this.pointers.size === 2) {
       this.down = null;
@@ -383,6 +400,7 @@ export class BlueprintEditor {
 
   _onPointerUp(event) {
     this.pointers.delete(event.pointerId);
+    if (this.pointers.size === 0) this._interacting = false;
 
     if (this.pinch) {
       if (this.pointers.size < 2) {
@@ -425,6 +443,7 @@ export class BlueprintEditor {
 
   _onPointerCancel(event) {
     this.pointers.delete(event.pointerId);
+    if (this.pointers.size === 0) this._interacting = false;
     if (this.pointers.size < 2) this.pinch = null;
     if (this.down && this.down.pointerId === event.pointerId) this.down = null;
     this.dirty = true;
@@ -432,9 +451,19 @@ export class BlueprintEditor {
 
   _onWheel(event) {
     event.preventDefault();
+    this._markInteracting();
     const point = this._screen(event);
     const factor = Math.exp(-event.deltaY * 0.0015);
     this._zoomAt(point, factor);
+  }
+
+  _markInteracting() {
+    this._interacting = true;
+    clearTimeout(this._interactTimer);
+    this._interactTimer = setTimeout(() => {
+      this._interacting = false;
+      this.dirty = true;
+    }, 160);
   }
 
   _zoomAt(point, factor) {
@@ -637,14 +666,16 @@ export class BlueprintEditor {
   _draw() {
     const ctx = this.ctx;
     const dpr = this.dpr;
+
+    if (this._connIndexDirty) this._rebuildConnectionIndex();
+
     ctx.setTransform(1, 0, 0, 1, 0, 0);
-    ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
     ctx.fillStyle = '#0c1117';
     ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
     this._drawGrid(ctx);
 
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.save();
     ctx.translate(this.view.x, this.view.y);
     ctx.scale(this.view.scale, this.view.scale);
@@ -670,6 +701,20 @@ export class BlueprintEditor {
     ctx.restore();
   }
 
+  _rebuildConnectionIndex() {
+    const set = this._connectedPins;
+    set.clear();
+    for (const conn of this.graph.connections) {
+      set.add(`${conn.fromNodeId}|out|${conn.fromNodePinName}`);
+      set.add(`${conn.toNodeId}|in|${conn.toNodePinName}`);
+    }
+    this._connIndexDirty = false;
+  }
+
+  _isPinConnected(nodeId, pinName, dir) {
+    return this._connectedPins.has(`${nodeId}|${dir}|${pinName}`);
+  }
+
   _visibleWorldRect() {
     return {
       x: -this.view.x / this.view.scale,
@@ -679,37 +724,59 @@ export class BlueprintEditor {
     };
   }
 
+  /** 使用离屏图案一次性绘制网格，避免每帧上千次 fillRect */
   _drawGrid(ctx) {
-    let step = 26 * this.view.scale;
-    while (step < 14) step *= 2;
-    const offsetX = ((this.view.x % step) + step) % step;
-    const offsetY = ((this.view.y % step) + step) % step;
-    ctx.fillStyle = 'rgba(148, 170, 196, 0.15)';
-    for (let x = offsetX; x < this.size.w; x += step) {
-      for (let y = offsetY; y < this.size.h; y += step) {
-        ctx.fillRect(x, y, 1.3, 1.3);
-      }
+    const step = Math.max(8, Math.round(26 * this.view.scale * this.dpr));
+    if (!this._gridPattern || this._gridStep !== step) {
+      const tile = document.createElement('canvas');
+      tile.width = step;
+      tile.height = step;
+      const tileCtx = tile.getContext('2d');
+      tileCtx.fillStyle = 'rgba(148, 170, 196, 0.16)';
+      tileCtx.beginPath();
+      tileCtx.arc(step / 2, step / 2, Math.max(1, this.dpr * 0.7), 0, Math.PI * 2);
+      tileCtx.fill();
+      this._gridPattern = ctx.createPattern(tile, 'repeat');
+      this._gridStep = step;
     }
+
+    const offsetX = (((this.view.x * this.dpr) % step) + step) % step;
+    const offsetY = (((this.view.y * this.dpr) % step) + step) % step;
+
+    ctx.save();
+    ctx.translate(offsetX, offsetY);
+    ctx.fillStyle = this._gridPattern;
+    ctx.fillRect(-step, -step, this.canvas.width + step * 2, this.canvas.height + step * 2);
+    ctx.restore();
   }
 
   _drawConnections(ctx) {
+    ctx.lineCap = 'round';
     for (const conn of this.graph.connections) {
       const fromNode = this.getNode(conn.fromNodeId);
       const toNode = this.getNode(conn.toNodeId);
       if (!fromNode || !toNode) continue;
-      const from = getPinAbs(fromNode, 'out', conn.fromNodePinName);
-      const to = getPinAbs(toNode, 'in', conn.toNodePinName);
-      if (!from || !to) continue;
+      const fromLayout = getNodeLayout(fromNode);
+      const toLayout = getNodeLayout(toNode);
+      if (!fromLayout || !toLayout) continue;
+      const fromPin = fromLayout.pinMap.get(`out:${conn.fromNodePinName}`);
+      const toPin = toLayout.pinMap.get(`in:${conn.toNodePinName}`);
+      if (!fromPin || !toPin) continue;
 
-      const pin = getPinLayout(fromNode, 'out', conn.fromNodePinName);
-      const isExec = pin?.kind === 'exec';
-      const active = this.selectedId && (conn.fromNodeId === this.selectedId || conn.toNodeId === this.selectedId);
+      const fromX = fromNode.position.x + fromPin.x;
+      const fromY = fromNode.position.y + fromPin.y;
+      const toX = toNode.position.x + toPin.x;
+      const toY = toNode.position.y + toPin.y;
 
-      ctx.save();
+      const isExec = fromPin.kind === 'exec';
+      const active =
+        this.selectedId &&
+        (conn.fromNodeId === this.selectedId || conn.toNodeId === this.selectedId);
+
       ctx.beginPath();
-      const control = Math.max(40, Math.abs(to.x - from.x) * 0.5);
-      ctx.moveTo(from.x, from.y);
-      ctx.bezierCurveTo(from.x + control, from.y, to.x - control, to.y, to.x, to.y);
+      const control = Math.max(40, Math.abs(toX - fromX) * 0.5);
+      ctx.moveTo(fromX, fromY);
+      ctx.bezierCurveTo(fromX + control, fromY, toX - control, toY, toX, toY);
       ctx.strokeStyle = isExec
         ? active
           ? 'rgba(255, 210, 148, 1)'
@@ -722,10 +789,9 @@ export class BlueprintEditor {
 
       // 终点圆点
       ctx.beginPath();
-      ctx.arc(to.x, to.y, 2.6, 0, Math.PI * 2);
+      ctx.arc(toX, toY, 2.6, 0, Math.PI * 2);
       ctx.fillStyle = isExec ? 'rgba(246, 193, 119, 0.9)' : 'rgba(77, 208, 193, 0.9)';
       ctx.fill();
-      ctx.restore();
     }
   }
 
@@ -774,15 +840,17 @@ export class BlueprintEditor {
     const { width, height, def } = layout;
     const selected = node.id === this.selectedId;
 
-    ctx.save();
+    // 选中光晕用描边代替 shadowBlur（后者在移动端开销很高）
     if (selected) {
-      ctx.shadowColor = 'rgba(77, 163, 255, 0.5)';
-      ctx.shadowBlur = 18;
+      this._roundRectPath(ctx, x - 2, y - 2, width + 4, height + 4, 12);
+      ctx.lineWidth = 4;
+      ctx.strokeStyle = 'rgba(77, 163, 255, 0.18)';
+      ctx.stroke();
     }
+
     this._roundRectPath(ctx, x, y, width, height, 10);
     ctx.fillStyle = '#1a222c';
     ctx.fill();
-    ctx.restore();
 
     // 头部
     ctx.save();
@@ -821,7 +889,7 @@ export class BlueprintEditor {
   _drawPin(ctx, node, pin, layout) {
     const px = node.position.x + pin.x;
     const py = node.position.y + pin.y;
-    const connected = isPinConnected(this.graph, node.id, pin.name, pin.dir);
+    const connected = this._isPinConnected(node.id, pin.name, pin.dir);
     const isPendingSource =
       this.pending && this.pending.nodeId === node.id && this.pending.pinName === pin.name;
     const color = pin.kind === 'exec' ? '#f6c177' : '#4dd0c1';
@@ -882,8 +950,15 @@ export class BlueprintEditor {
       );
     }
 
-    // 未连接输入的内联值预览
-    if (pin.dir === 'in' && pin.kind === 'port' && pin.editor && !connected && this.view.scale >= 0.55) {
+    // 未连接输入的内联值预览（交互中跳过以降低绘制成本）
+    if (
+      pin.dir === 'in' &&
+      pin.kind === 'port' &&
+      pin.editor &&
+      !connected &&
+      !this._interacting &&
+      this.view.scale >= 0.55
+    ) {
       const hasOutputLabel = layout.pins.some(
         (item) => item.dir === 'out' && item.row === pin.row && item.label
       );
@@ -917,12 +992,21 @@ export class BlueprintEditor {
   _fitText(ctx, text, maxWidth) {
     if (!maxWidth || maxWidth <= 8) return String(text);
     const str = String(text);
-    if (ctx.measureText(str).width <= maxWidth) return str;
-    let cut = str;
-    while (cut.length > 1 && ctx.measureText(`${cut}…`).width > maxWidth) {
-      cut = cut.slice(0, -1);
+    const key = `${ctx.font}|${Math.round(maxWidth)}|${str}`;
+    const cached = this._textCache.get(key);
+    if (cached !== undefined) return cached;
+
+    let result = str;
+    if (ctx.measureText(str).width > maxWidth) {
+      let cut = str;
+      while (cut.length > 1 && ctx.measureText(`${cut}…`).width > maxWidth) {
+        cut = cut.slice(0, -1);
+      }
+      result = `${cut}…`;
     }
-    return `${cut}…`;
+    if (this._textCache.size > 800) this._textCache.clear();
+    this._textCache.set(key, result);
+    return result;
   }
 
   _roundRectPath(ctx, x, y, width, height, radius) {
