@@ -317,6 +317,12 @@ export function buildAbiDocument(externalNodes = []) {
         response: '{ code, ok, logs, error, durationMs }',
       },
       examples: { method: 'GET', path: '/api/examples' },
+      importExtensions: {
+        method: 'POST',
+        path: '/api/extensions/import',
+        body: 'ZIP 二进制（application/zip）',
+        description: '导入 .zip 扩展包，解压到 extensions/ 并热重载',
+      },
       blueprints: {
         method: 'GET',
         path: '/api/blueprints',

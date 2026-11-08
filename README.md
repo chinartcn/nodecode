@@ -23,7 +23,7 @@
 | 变量 | 工作区级变量，可读取/赋值，默认值随蓝图保存 |
 | 模块 | 工作区/子图可导出为 JSON，可替换导入或合并导入；含触发节点即可独立运行 |
 | 蓝图库 | 多份命名蓝图保存到服务端文件，随时加载、覆盖、重命名、删除 |
-| 扩展节点 | `extensions/` 下放置 `.json` / `.js` / `.mjs`，通过 ABI 注册自定义节点 |
+| 扩展节点 | `extensions/` 下放置 `.json` / `.js` / `.mjs`，通过 ABI 注册自定义节点；支持导入 `.zip` 扩展包并热重载 |
 | 浏览器 SDK | `window.NodeCode.api` / `window.NodeCode.abi` 提供脚本化控制 |
 | 编辑体验 | 撤销/重做、复制/粘贴、框选、多选整体拖拽、节点浮窗编辑、全屏属性面板 |
 | 自动保存 | 可配置间隔（关闭 / 10s / 30s / 1min / 5min），页面隐藏时兜底保存 |
@@ -91,6 +91,7 @@ codeck-mobile/
 │   ├── storage.js         # 工作区持久化（data/workspace.json）
 │   ├── blueprints.js      # 蓝图库（data/blueprints/*.json）
 │   ├── examples.js        # 内置示例蓝图
+│   ├── zip.js             # 零依赖 ZIP 读取器（扩展包导入）
 │   └── extensions.js      # 外部扩展节点加载器
 ├── shared/                # 前后端共享代码
 │   ├── node-defs.js       # 内置节点定义（布局 + 代码生成）
@@ -123,7 +124,7 @@ codeck-mobile/
 | --- | --- |
 | `data/workspace.json` | 当前工作区（名称、更新时间、主图、函数、变量） |
 | `data/blueprints/<id>.json` | 蓝图库中的单份蓝图 |
-| `extensions/*.json` / `*.js` / `*.mjs` | 外部扩展节点，服务启动时加载 |
+| `extensions/*.json` / `*.js` / `*.mjs` | 外部扩展节点，服务启动时加载；也可通过 `.zip` 扩展包导入 |
 | `localStorage` | 界面偏好：自动保存间隔、面板列数/高度、节点浮窗位置 |
 
 `data/` 已被 `.gitignore` 忽略，属于本地运行数据。

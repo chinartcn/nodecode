@@ -105,6 +105,7 @@ let signatureDraft = { name: '', inputs: [], outputs: [] };
 let classSettingsId = null;
 let classDraft = { name: '', properties: [] };
 let externalNodeDefs = [];
+let serverExternalNames = new Set();
 let nodeCatalog = [];
 let nodeCardNodeId = null;
 let nodeCardDrag = null;
@@ -163,6 +164,28 @@ function registerClientExternalNode(def) {
   setExternalNodeDefs(externalNodeDefs);
   renderPalette();
   return serialized;
+}
+
+/**
+ * 重新拉取服务端节点目录。
+ * 服务端扩展更新后，用目录中的外部节点替换旧的，同时保留仅在客户端注册的节点。
+ */
+async function refreshNodeCatalog() {
+  const catalog = await api.getNodeCatalog();
+  nodeCatalog = catalog.nodes || [];
+  const catalogDefs = nodeCatalog.filter((def) => def.external);
+  const next = new Map();
+
+  for (const def of externalNodeDefs) {
+    if (!serverExternalNames.has(def.name)) next.set(def.name, def);
+  }
+  for (const def of catalogDefs) next.set(def.name, def);
+
+  externalNodeDefs = [...next.values()];
+  serverExternalNames = new Set(catalogDefs.map((def) => def.name));
+  setExternalNodeDefs(externalNodeDefs);
+  renderPalette();
+  return catalog;
 }
 
 const NodeCodeAbi = {
@@ -270,6 +293,11 @@ const NodeCodeApi = {
     return getWorkspaceGraph();
   },
   importModule: (payload) => applyModule(payload),
+  importExtensionPackage: async (file) => {
+    const result = await api.importExtensionPackage(file);
+    await refreshNodeCatalog();
+    return result;
+  },
   toast: (message) => toast(String(message)),
   on: (event, handler) => {
     if (sdkListeners[event] && typeof handler === 'function') sdkListeners[event].add(handler);
@@ -303,15 +331,7 @@ async function boot() {
     examples = Array.isArray(exampleList) ? exampleList : [];
 
     try {
-      const catalog = await api.getNodeCatalog();
-      nodeCatalog = catalog.nodes || [];
-      const catalogDefs = nodeCatalog.filter((def) => def.external);
-      const byName = new Map(catalogDefs.map((def) => [def.name, def]));
-      for (const def of externalNodeDefs) {
-        if (!byName.has(def.name)) byName.set(def.name, def);
-      }
-      externalNodeDefs = [...byName.values()];
-      setExternalNodeDefs(externalNodeDefs);
+      await refreshNodeCatalog();
     } catch {
       /* 节点目录加载失败时保留客户端已注册的扩展节点 */
     }
@@ -2869,6 +2889,32 @@ async function importModuleFile(file) {
   closeSheet('menu');
 }
 
+async function importExtensionFile(file) {
+  if (!/\.zip$/i.test(file.name)) {
+    toast('请选择 .zip 扩展包');
+    return;
+  }
+  toast('正在导入扩展包…');
+  const result = await api.importExtensionPackage(file);
+  await refreshNodeCatalog();
+  closeSheet('menu');
+
+  const nodeCount = Array.isArray(result.nodes) ? result.nodes.length : 0;
+  const overwritten = (result.overwritten || []).length;
+  toast(
+    `已导入 ${result.files.length} 个文件${overwritten ? `（覆盖 ${overwritten} 个）` : ''} · 共 ${nodeCount} 个扩展节点`
+  );
+
+  const notes = [];
+  if (result.errors?.length) {
+    notes.push(`部分扩展加载失败：${result.errors[0].file} · ${result.errors[0].message}`);
+  }
+  if (result.skipped?.length) {
+    notes.push(`已忽略 ${result.skipped.length} 个非扩展文件`);
+  }
+  if (notes.length) setTimeout(() => toast(notes[0]), 2400);
+}
+
 /* ---------------- 代码 / 运行 ---------------- */
 
 async function showCode() {
@@ -3286,6 +3332,19 @@ function bindUI() {
       await importModuleFile(file);
     } catch (error) {
       toast(`模块导入失败：${error.message}`);
+    }
+  });
+
+  $('import-extension').addEventListener('click', () => $('import-extension-file').click());
+
+  $('import-extension-file').addEventListener('change', async (event) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file) return;
+    try {
+      await importExtensionFile(file);
+    } catch (error) {
+      toast(`扩展包导入失败：${error.message}`);
     }
   });
 

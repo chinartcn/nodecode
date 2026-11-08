@@ -15,7 +15,7 @@ import { compileGraph } from './compiler.js';
 import { runInSandbox } from './sandbox.js';
 import { loadState, saveState } from './storage.js';
 import { examples } from './examples.js';
-import { loadExtensions } from './extensions.js';
+import { installExtensionZip, loadExtensions } from './extensions.js';
 import {
   createBlueprint,
   deleteBlueprint,
@@ -99,6 +99,25 @@ function readBody(req, limit = 4 * 1024 * 1024) {
   });
 }
 
+/** 读取原始二进制请求体（用于 .zip 上传） */
+function readRawBody(req, limit = 25 * 1024 * 1024) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    let size = 0;
+    req.on('data', (chunk) => {
+      size += chunk.length;
+      if (size > limit) {
+        reject(new Error('扩展包过大（最大 25MB）'));
+        req.destroy();
+        return;
+      }
+      chunks.push(chunk);
+    });
+    req.on('end', () => resolve(Buffer.concat(chunks)));
+    req.on('error', reject);
+  });
+}
+
 async function handleApi(req, res, pathname) {
   if (pathname === '/api/abi' && req.method === 'GET') {
     sendJSON(res, 200, buildAbiDocument(getExternalNodeDefs()), CORS_HEADERS);
@@ -131,6 +150,18 @@ async function handleApi(req, res, pathname) {
 
   if (pathname === '/api/health' && req.method === 'GET') {
     sendJSON(res, 200, { ok: true, name: 'codeck-mobile' });
+    return true;
+  }
+
+  if (pathname === '/api/extensions/import' && req.method === 'POST') {
+    try {
+      const buffer = await readRawBody(req);
+      if (!buffer.length) throw new Error('请上传 .zip 扩展包');
+      const result = await installExtensionZip(buffer);
+      sendJSON(res, 200, { ok: true, ...result });
+    } catch (error) {
+      sendJSON(res, 400, { error: error.message || '扩展包导入失败' });
+    }
     return true;
   }
 

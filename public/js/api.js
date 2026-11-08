@@ -40,4 +40,10 @@ export const api = {
   compile: (graph) => request('/api/compile', { method: 'POST', body: JSON.stringify({ graph }) }),
   run: (graph, timeoutMs = 8000) =>
     request('/api/run', { method: 'POST', body: JSON.stringify({ graph, timeoutMs }) }),
+  importExtensionPackage: (file) =>
+    request('/api/extensions/import', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/zip' },
+      body: file,
+    }),
 };

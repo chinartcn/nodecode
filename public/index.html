@@ -224,6 +224,12 @@
             <button class="row-btn danger" id="clear-graph">清空画布</button>
           </div>
 
+          <div class="menu-group">
+            <h3>扩展包</h3>
+            <p class="hint">导入 .zip，解压其中的 .json / .js / .mjs 到 extensions/ 并立即重载。</p>
+            <button class="row-btn" id="import-extension">导入扩展包（.zip）</button>
+          </div>
+
           <p class="about">
             基于 codeck 的可视化蓝图理念实现 · Node.js 服务端编译与沙箱运行 · Canvas 触控编辑器<br />
             沙箱不是安全边界，仅供本地或可信局域网使用
@@ -420,6 +426,7 @@
       <div class="toast" id="toast" hidden></div>
       <input id="import-json-file" type="file" accept=".json,application/json" hidden />
       <input id="import-module-file" type="file" accept=".json,application/json" hidden />
+      <input id="import-extension-file" type="file" accept=".zip,application/zip" hidden />
     </div>
 
     <script type="module" src="/js/app.js"></script>

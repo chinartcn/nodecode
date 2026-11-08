@@ -443,7 +443,7 @@ else if (outcome) { error = outcome; }
 
 ### 6.4 扩展加载
 
-`server/extensions.js` 在服务启动时：
+`server/extensions.js`：
 
 1. 读取 `extensions/` 下 `.json` / `.js` / `.mjs`
 2. JSON 通过 ABI 校验并构建节点定义
@@ -451,7 +451,17 @@ else if (outcome) { error = outcome; }
 4. 同名节点跳过
 5. 注册到 `setExternalNodeDefs`
 
-扩展变更需要重启服务。
+加载前会先清空旧的外部节点注册表，保证热重载时不会把上一版节点误判为同名冲突。
+
+扩展包导入流程：
+
+1. 前端 `POST /api/extensions/import` 上传 ZIP 二进制
+2. `server/zip.js` 解析中央目录并解压（Store / Deflate，零第三方依赖）
+3. `installExtensionZip` 过滤 `.json` / `.js` / `.mjs`，扁平化并写入 `extensions/`
+4. 重新执行 `loadExtensions()` 热重载
+5. 前端重新拉取 `/api/nodes`，刷新添加面板
+
+手动修改扩展文件仍需重启服务；通过 ZIP 导入会立即生效。
 
 ---
 

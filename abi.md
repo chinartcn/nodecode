@@ -22,12 +22,42 @@ ABI 版本：`1`
 - 文件按名称排序加载
 - 同名节点只保留第一个，后续会输出 `[extensions] 跳过重复节点`
 - 单个文件加载失败只打印警告，不影响其它扩展
-- 修改扩展后必须**重启服务**
+- 手动新增/修改扩展文件后需要**重启服务**
+- 通过 `.zip` 扩展包导入会立即热重载，无需重启
 
 服务端加载完成后：
 
 - 编译 `/api/compile`、`/api/run` 时可识别这些节点
 - 前端通过 `/api/nodes` 获取 `external: true` 的节点并显示在添加面板
+
+### 1.1 通过 ZIP 扩展包导入
+
+`☰` → 「扩展包 → 导入扩展包（.zip）」，或调用：
+
+```http
+POST /api/extensions/import
+Content-Type: application/zip
+```
+
+规则：
+
+- ZIP 内可以包含多层目录，其中的 `.json` / `.js` / `.mjs` 会被扁平化到 `extensions/`
+- 其它文件（README、图片等）会被忽略
+- 同名文件会被覆盖
+- 路径中包含 `..` 的条目会被拒绝
+- 导入完成后立即重载扩展节点，前端自动刷新添加面板
+
+压缩包示例：
+
+```text
+my-extensions.zip
+├── my-nodes/
+│   ├── double.json
+│   └── log.js
+└── README.md
+```
+
+导入后 `extensions/double.json` 与 `extensions/log.js` 生效。
 
 ---
 
@@ -581,7 +611,7 @@ curl -s -X POST http://localhost:5173/api/abi/validate \
 6. **分支端点用 `block`**：缩进下游代码，生成结果更易读
 7. **`prepare` 用于无副作用工具函数**：会注入到整份生成代码顶部
 8. **不要把密钥写进扩展代码**：扩展代码会随服务端运行，且没有隔离
-9. **修改扩展后重启服务**：前端页面也需要刷新以重新拉取 `/api/nodes`
+9. **手动改文件需重启；用 ZIP 导入无需重启**：通过界面导入 `.zip` 会自动热重载并刷新节点面板
 10. **优先在 `extensions/` 中实现**：才能同时支持服务端编译和客户端展示
 
 ---

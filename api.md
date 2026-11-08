@@ -73,6 +73,7 @@
 | DELETE | `/api/blueprints/:id` | 删除指定蓝图 |
 | POST | `/api/compile` | 编译蓝图为 JavaScript |
 | POST | `/api/run` | 编译并在沙箱中运行 |
+| POST | `/api/extensions/import` | 上传 `.zip` 扩展包并热重载扩展节点 |
 
 静态资源：
 
@@ -530,6 +531,76 @@
 
 ---
 
+### 1.14 `POST /api/extensions/import`
+
+上传 `.zip` 扩展包。服务端解压其中的 `.json` / `.js` / `.mjs` 文件到 `extensions/`，然后**热重载**扩展节点，无需重启服务。
+
+**请求**
+
+```http
+POST /api/extensions/import
+Content-Type: application/zip
+
+<zip 二进制>
+```
+
+说明：
+
+- 请求体为原始 ZIP 二进制，最大 25MB
+- ZIP 内文件可以位于任意目录，会被扁平化到 `extensions/` 根目录
+- 只导入 `.json` / `.js` / `.mjs`，其它文件会被忽略
+- 同名文件会被覆盖
+- 路径中包含 `..` 的条目会被拒绝
+- 解压后单文件上限 10MB，总大小上限 50MB，最多 500 个条目
+- 不支持 ZIP64 与加密 ZIP
+
+**成功响应（200）**
+
+```json
+{
+  "ok": true,
+  "files": ["zip-double.json", "zip-log.js"],
+  "overwritten": ["zip-double.json"],
+  "skipped": ["README.txt"],
+  "nodes": ["zip-double", "zip-log"],
+  "errors": []
+}
+```
+
+| 字段 | 说明 |
+| --- | --- |
+| `files` | 实际写入的文件名 |
+| `overwritten` | 被覆盖的已有文件名 |
+| `skipped` | 被忽略的文件（非扩展文件、重复文件名等） |
+| `nodes` | 重载后当前全部外部节点名 |
+| `errors` | 单个扩展文件加载失败的信息 `{ file, message }` |
+
+**失败响应（400）**
+
+```json
+{ "error": "压缩包中没有可导入的扩展文件（.json / .js / .mjs）" }
+```
+
+其它可能错误：
+
+- `不是有效的 ZIP 文件`
+- `未找到 ZIP 中央目录`
+- `暂不支持 ZIP64 格式，请使用普通 ZIP`
+- `不支持加密 ZIP 条目：...`
+- `扩展包过大（最大 25MB）`
+
+**curl 示例**
+
+```bash
+curl -X POST http://localhost:5173/api/extensions/import \
+  -H 'Content-Type: application/zip' \
+  --data-binary @my-extensions.zip
+```
+
+导入成功后，前端可重新请求 `/api/nodes` 获取新的外部节点定义。
+
+---
+
 ## 二、浏览器 SDK
 
 页面加载后，全局对象 `window.NodeCode` 可用：
@@ -599,6 +670,7 @@ console.log(window.NodeCode.abi.getNodes().length);
 | `save()` | `Promise<void>` | 标记并立即保存 |
 | `importJson(payload)` | `Promise<WorkspaceGraph>` | 替换导入工作区 |
 | `importModule(payload)` | `Promise<ModuleSummary>` | 合并导入模块 |
+| `importExtensionPackage(file)` | `Promise<ExtensionImportResult>` | 上传 `.zip` 扩展包并刷新节点目录 |
 | `compile(graph?)` | `Promise<{ code }>` | 编译，默认当前工作区 |
 | `run(graph?, timeoutMs?)` | `Promise<RunResult>` | 运行，默认当前工作区、8000ms |
 
