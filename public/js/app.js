@@ -284,14 +284,10 @@ function getPaletteDefs() {
   if (currentScope !== 'main') {
     const fn = workspace.functions.find((item) => item.id === currentScope);
     if (fn) {
-      if ((fn.inputs || []).length) {
-        const def = getNodeDef(`fnin:${fn.id}`);
-        if (def) defs.push(def);
-      }
-      if ((fn.outputs || []).length) {
-        const def = getNodeDef(`fnout:${fn.id}`);
-        if (def) defs.push(def);
-      }
+      const inputDef = getNodeDef(`fnin:${fn.id}`);
+      const outputDef = getNodeDef(`fnout:${fn.id}`);
+      if (inputDef) defs.push(inputDef);
+      if (outputDef) defs.push(outputDef);
     }
   }
 
@@ -857,8 +853,25 @@ function renderPalette() {
     item.append(dot, meta, plus);
     item.addEventListener('click', () => {
       const node = editor.addNode(def.name);
-      // 保持面板打开，方便连续添加多个节点
-      if (node) toast(`已添加 ${def.label}`);
+      if (!node) return;
+      toast(`已添加 ${def.label}`);
+
+      if (def.name.startsWith('fnin:') || def.name.startsWith('fnout:')) {
+        const fnId = def.name.split(':')[1];
+        const fn = workspace.functions.find((item) => item.id === fnId);
+        const isInput = def.name.startsWith('fnin:');
+        if (fn && !((isInput ? fn.inputs : fn.outputs) || []).length) {
+          setTimeout(
+            () =>
+              toast(
+                isInput
+                  ? '当前函数还没有输入参数，可在菜单 → 函数管理中设置'
+                  : '当前函数还没有输出参数，可在菜单 → 函数管理中设置'
+              ),
+            1800
+          );
+        }
+      }
     });
     container.append(item);
   }

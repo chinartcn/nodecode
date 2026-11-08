@@ -489,6 +489,10 @@ button {
   box-shadow: 0 8px 22px rgba(0, 0, 0, 0.35);
 }
 
+.hintbar[hidden] {
+  display: none;
+}
+
 .hintbar.error {
   border-color: rgba(255, 107, 107, 0.5);
   color: #ffc0c0;

@@ -115,10 +115,10 @@ export function buildFunctionNodeDefs(functions) {
     // 函数输入节点：读取参数
     defs.push({
       name: functionInputDefName(fn.id),
-      label: `输入 · ${fn.name}`,
-      description: '读取函数输入参数',
+      label: '函数输入',
+      description: `读取「${fn.name}」的输入参数`,
       type: 'logic',
-      category: 'function',
+      category: 'io',
       width: 200,
       pins: inputs.map((entry, index) => ({
         name: `i_${entry.id}`,
@@ -133,10 +133,10 @@ export function buildFunctionNodeDefs(functions) {
     // 函数输出节点：写入返回值
     defs.push({
       name: functionOutputDefName(fn.id),
-      label: `输出 · ${fn.name}`,
-      description: '设置函数返回值',
+      label: '函数输出',
+      description: `设置「${fn.name}」的返回值`,
       type: 'function',
-      category: 'function',
+      category: 'io',
       width: 220,
       pins: [
         execInPin(0),
