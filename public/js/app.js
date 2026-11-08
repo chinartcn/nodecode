@@ -5,9 +5,14 @@ import {
   getNodeDef,
   getVisibleNodeDefs,
   isValidIdentifier,
+  nodeDefs,
   setExternalNodeDefs,
 } from '/shared/node-defs.js';
-import { serializeNodeDef, validateExternalNodeDefinition } from '/shared/abi.js';
+import {
+  serializeNodeDef,
+  serializeNodeDefs,
+  validateExternalNodeDefinition,
+} from '/shared/abi.js';
 import { generateId, getNodeLayout, getPinLayout, normalizeGraph } from '/shared/graph-utils.js';
 import {
   applyFunctionNodeDefs,
@@ -70,6 +75,7 @@ let pendingFunctionMode = null;
 let signatureFunctionId = null;
 let signatureDraft = { name: '', inputs: [], outputs: [] };
 let externalNodeDefs = [];
+let nodeCatalog = [];
 
 // 浏览器全局 SDK（window.NodeCode）
 const sdkListeners = {
@@ -135,7 +141,11 @@ const NodeCodeAbi = {
   },
   registerNode: (def) => registerClientExternalNode(def),
   registerNodes: (defs) => (defs || []).map(registerClientExternalNode),
-  getNodes: () => externalNodeDefs.slice(),
+  getNodes: () =>
+    nodeCatalog.length > 0
+      ? nodeCatalog.slice()
+      : [...serializeNodeDefs(nodeDefs), ...externalNodeDefs],
+  getExternalNodes: () => externalNodeDefs.slice(),
   load: async (url) => {
     const module = await import(url);
     let exported = module.default ?? module.nodes ?? module;
@@ -243,7 +253,8 @@ async function boot() {
 
     try {
       const catalog = await api.getNodeCatalog();
-      const catalogDefs = (catalog.nodes || []).filter((def) => def.external);
+      nodeCatalog = catalog.nodes || [];
+      const catalogDefs = nodeCatalog.filter((def) => def.external);
       const byName = new Map(catalogDefs.map((def) => [def.name, def]));
       for (const def of externalNodeDefs) {
         if (!byName.has(def.name)) byName.set(def.name, def);

@@ -452,7 +452,8 @@ export function buildAbiDocument(externalNodes = []) {
         defineNode: 'defineNode(def) -> 规范化节点定义',
         registerNode: 'registerNode(def) -> 注册到当前客户端节点面板',
         registerNodes: 'registerNodes(defs) -> 批量注册',
-        getNodes: 'getNodes() -> 当前客户端外部节点',
+        getNodes: 'getNodes() -> 全部节点定义（内置 + 外部扩展）',
+        getExternalNodes: 'getExternalNodes() -> 仅外部扩展节点',
         load: 'load(url) -> 动态 import 一个 JS ABI 模块并注册',
       },
       api: {
