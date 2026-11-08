@@ -212,7 +212,13 @@ export class BlueprintEditor {
   deleteNode(nodeId) {
     const node = this.getNode(nodeId);
     if (!node) return false;
-    if (getNodeDef(node.name)?.type === 'begin') return false;
+    const def = getNodeDef(node.name);
+    if (def?.type === 'begin') {
+      const triggerCount = this.graph.nodes.filter(
+        (item) => getNodeDef(item.name)?.type === 'begin'
+      ).length;
+      if (triggerCount <= 1) return false;
+    }
     const before = this._snapshot();
     this.graph.nodes = this.graph.nodes.filter((item) => item.id !== nodeId);
     this.graph.connections = this.graph.connections.filter(
@@ -263,7 +269,7 @@ export class BlueprintEditor {
     this.options.onStructure?.();
   }
 
-  /** 删除当前选中的所有节点（开始节点除外） */
+  /** 删除选中的普通节点（触发节点保留，避免删掉所有入口） */
   deleteSelection() {
     const nodes = this.getSelectedNodes().filter(
       (node) => getNodeDef(node.name)?.type !== 'begin'

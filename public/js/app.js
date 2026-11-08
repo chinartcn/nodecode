@@ -21,6 +21,7 @@ import {
   functionRetDefName,
 } from '/shared/function-defs.js';
 import { wrapSelectionAsFunction } from '/shared/function-wrap.js';
+import { mergeModuleGraph } from '/shared/module-utils.js';
 import { BlueprintEditor } from './editor.js';
 import { api } from './api.js';
 
@@ -230,6 +231,7 @@ const NodeCodeApi = {
     await saveNow();
     return getWorkspaceGraph();
   },
+  importModule: (payload) => applyModule(payload),
   toast: (message) => toast(String(message)),
   on: (event, handler) => {
     if (sdkListeners[event] && typeof handler === 'function') sdkListeners[event].add(handler);
@@ -557,10 +559,12 @@ function goBackScope() {
 }
 
 function getPaletteDefs() {
-  const defs = [
+  const allDefs = [
     ...getVisibleNodeDefs(),
     ...externalNodeDefs.filter((def) => !def.hidden),
   ];
+  // 函数子图内不能再添加触发节点
+  const defs = currentScope === 'main' ? allDefs : allDefs.filter((def) => def.type !== 'begin');
 
   if (currentScope !== 'main') {
     const fn = workspace.functions.find((item) => item.id === currentScope);
@@ -1054,7 +1058,7 @@ function refreshSelectionBar() {
       : '';
   $('selection-title').textContent = def.label + suffix;
   $('selection-dot').style.background = NODE_TYPE_COLORS[def.type] || '#4da3ff';
-  $('selection-delete').style.display = def.type === 'begin' ? 'none' : '';
+  $('selection-delete').style.display = canDeleteNode(node, def) ? '' : 'none';
   bar.hidden = false;
 }
 
@@ -1377,8 +1381,8 @@ function renderNodeCard() {
     }
   }
 
-  if (def.type === 'begin') {
-    body.append(div('empty', '开始节点不能删除。'));
+  if (!canDeleteNode(node, def)) {
+    body.append(div('empty', '至少保留一个触发节点。'));
   } else {
     const actions = div('inspector-actions');
     const remove = document.createElement('button');
@@ -1483,8 +1487,8 @@ function renderInspector() {
 
   const actions = document.createElement('div');
   actions.className = 'inspector-actions';
-  if (def.type === 'begin') {
-    actions.append(div('empty', '开始节点是蓝图入口，不能删除。'));
+  if (!canDeleteNode(node, def)) {
+    actions.append(div('empty', '至少保留一个触发节点。'));
   } else {
     const remove = document.createElement('button');
     remove.className = 'danger-outline';
@@ -1493,6 +1497,14 @@ function renderInspector() {
     actions.append(remove);
   }
   body.append(actions);
+}
+
+function canDeleteNode(node, def) {
+  if (!def || def.type !== 'begin') return true;
+  const triggerCount = editor.graph.nodes.filter(
+    (item) => getNodeDef(item.name)?.type === 'begin'
+  ).length;
+  return triggerCount > 1;
 }
 
 function buildFunctionCallActions(node) {
@@ -1668,11 +1680,20 @@ function askDeleteNode(nodeId) {
   const node = editor.getNode(nodeId);
   if (!node) return;
   const def = getNodeDef(node.name);
-  if (!def || def.type === 'begin') {
-    toast('开始节点不能删除');
+  if (!def) return;
+  if (def.type === 'begin') {
+    const triggerCount = editor.graph.nodes.filter(
+      (item) => getNodeDef(item.name)?.type === 'begin'
+    ).length;
+    if (triggerCount <= 1) {
+      toast('至少保留一个触发节点');
+      return;
+    }
+  }
+  if (!editor.deleteNode(nodeId)) {
+    toast('无法删除该节点');
     return;
   }
-  editor.deleteNode(nodeId);
   if (openSheetName === 'inspector') closeSheet('inspector');
   toast('已删除节点，可撤销');
 }
@@ -2037,7 +2058,10 @@ function saveCurrentBlueprint({ reopen = null } = {}) {
 
 function updateStats() {
   const graph = editor.graph;
-  $('stats').textContent = `${graph.nodes.length} 个节点 · ${graph.connections.length} 条连线 · ${graph.variables.length} 个变量 · ${workspace.functions.length} 个函数`;
+  const triggerCount = graph.nodes.filter(
+    (node) => getNodeDef(node.name)?.type === 'begin'
+  ).length;
+  $('stats').textContent = `${graph.nodes.length} 个节点 · ${triggerCount} 个触发 · ${graph.connections.length} 条连线 · ${graph.variables.length} 个变量 · ${workspace.functions.length} 个函数`;
   $('variable-count').textContent = String(graph.variables.length);
   const functionCount = $('function-count');
   if (functionCount) functionCount.textContent = String(workspace.functions.length);
@@ -2082,6 +2106,51 @@ async function importGraphFile(file) {
   markDirty();
   await saveNow();
   toast(`已导入 ${file.name}`);
+}
+
+/**
+ * 合并模块（外部子图）到当前作用域。
+ * - 模块自带触发节点：保留触发，作为独立入口并发运行
+ * - 纯数据模块：仅合并节点/连线，由用户继续连线传值
+ */
+async function applyModule(payload, options = {}) {
+  const result = mergeModuleGraph(editor.getGraph(), payload, {
+    targetScope: currentScope,
+    takenFunctionNames: workspace.functions.map((fn) => fn.name),
+  });
+
+  if (result.functions.length > 0) {
+    workspace.functions.push(...result.functions);
+    applyFunctionNodeDefs(workspace.functions);
+    for (const fn of result.functions) syncSignatureNodes(fn);
+  }
+
+  editor.setGraph(result.graph, { fit: options.fit !== false });
+  syncCurrentScope();
+  refreshSelectionBar();
+  refreshMultiToolbar();
+  updateStats();
+  refreshInspector();
+  updateScopeBar();
+  markDirty();
+  if (options.save !== false) await saveNow();
+
+  const { summary } = result;
+  const triggerText = summary.triggers > 0 ? ` · ${summary.triggers} 个独立触发` : '';
+  const modeText =
+    summary.triggers > 0
+      ? '（自带触发，将作为独立入口运行）'
+      : summary.hasTrigger
+        ? '（函数子图内已移除触发节点）'
+        : '（纯数据模块，请连线传值）';
+  toast(`已合并模块「${summary.name}」：${summary.nodes} 个节点${triggerText}${modeText}`);
+  return summary;
+}
+
+async function importModuleFile(file) {
+  const text = await file.text();
+  await applyModule(JSON.parse(text));
+  closeSheet('menu');
 }
 
 /* ---------------- 代码 / 运行 ---------------- */
@@ -2461,6 +2530,19 @@ function bindUI() {
       await importGraphFile(file);
     } catch (error) {
       toast(`导入失败：${error.message}`);
+    }
+  });
+
+  $('import-module').addEventListener('click', () => $('import-module-file').click());
+
+  $('import-module-file').addEventListener('change', async (event) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file) return;
+    try {
+      await importModuleFile(file);
+    } catch (error) {
+      toast(`模块导入失败：${error.message}`);
     }
   });
 

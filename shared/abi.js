@@ -476,6 +476,7 @@ export function buildAbiDocument(externalNodes = []) {
         save: '保存工作区',
         exportJson: '导出 JSON 对象',
         importJson: 'importJson(payload) 导入工作区',
+        importModule: 'importModule(payload) 合并外部模块；含触发节点时作为独立入口运行，纯数据节点仅合并连线',
         listBlueprints: '蓝图库列表',
         saveBlueprint: 'saveBlueprint(name) 保存当前工作区为命名蓝图',
         loadBlueprint: 'loadBlueprint(id) 加载指定蓝图',

@@ -162,7 +162,7 @@ export function normalizeGraph(raw) {
     setDynamicNodeDefs(buildFunctionNodeDefs(functions));
   }
   for (const fn of functions) {
-    fn.graph = normalizeScope(fn.graph);
+    fn.graph = normalizeScope(fn.graph, { singleTrigger: true });
   }
 
   const scope = normalizeScope(source);
@@ -211,7 +211,7 @@ function normalizeFunctions(list) {
 }
 
 /** 归一化单张图（主图或某个函数内部图） */
-function normalizeScope(raw) {
+function normalizeScope(raw, options = {}) {
   const source = raw && typeof raw === 'object' ? raw : {};
   const nodes = [];
 
@@ -233,15 +233,15 @@ function normalizeScope(raw) {
     }
   }
 
-  // 保证有且有且仅有一个开始节点
-  const beginIndexes = [];
+  // 触发节点：主图可多个，函数内部只保留一个
+  const triggerIndexes = [];
   nodes.forEach((node, index) => {
-    if (getNodeDef(node.name)?.type === 'begin') beginIndexes.push(index);
+    if (getNodeDef(node.name)?.type === 'begin') triggerIndexes.push(index);
   });
-  if (beginIndexes.length === 0) {
+  if (triggerIndexes.length === 0) {
     nodes.unshift({ id: generateId('n'), name: 'begin', position: { x: 40, y: 60 }, data: {} });
-  } else {
-    for (let i = beginIndexes.length - 1; i >= 1; i -= 1) nodes.splice(beginIndexes[i], 1);
+  } else if (options.singleTrigger) {
+    for (let i = triggerIndexes.length - 1; i >= 1; i -= 1) nodes.splice(triggerIndexes[i], 1);
   }
 
   const ids = new Set();

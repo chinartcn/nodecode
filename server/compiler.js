@@ -90,6 +90,22 @@ export class Compiler {
     return body;
   }
 
+  /** 单个触发节点对应的独立任务体 */
+  generateTriggerBody(trigger) {
+    const def = getNodeDef(trigger.name) || {};
+    this.collectPrepare(def);
+
+    let body = this.generateVariables();
+    const chain = this.generateCodeFromNode(this.getExecNext(trigger.id));
+    if (def.trigger === 'condition') {
+      const condition = this.getInputCode(def.conditionPin || 'condition', trigger.id);
+      body += `if (${condition}) {\n${indent(chain, 2)}\n}\n`;
+    } else {
+      body += chain;
+    }
+    return body;
+  }
+
   generateVariables() {
     const variables = Array.isArray(this.graph.variables) ? this.graph.variables : [];
     if (variables.length === 0) return '';
@@ -341,17 +357,56 @@ export function compileGraph(graph) {
     );
   }
 
-  const mainCompiler = new Compiler(
-    { nodes: graph.nodes, connections: graph.connections, variables: graph.variables },
-    { prepares, functionMap }
+  // 主图：每个触发节点编译为独立任务，并发运行且互不阻塞
+  const triggers = (graph.nodes || []).filter(
+    (node) => getNodeDef(node.name)?.type === 'begin'
   );
-  const mainBody = mainCompiler.generateBody();
+  if (triggers.length === 0) {
+    throw new Error('主图至少需要一个触发节点');
+  }
+
+  const taskEntries = [];
+  for (const trigger of triggers) {
+    const def = getNodeDef(trigger.name) || {};
+    const compiler = new Compiler(
+      { nodes: graph.nodes, connections: graph.connections, variables: graph.variables },
+      { prepares, functionMap }
+    );
+    const body = compiler.generateTriggerBody(trigger);
+    const taskName = `__task_${String(trigger.id).replace(/[^A-Za-z0-9_$]/g, '_')}`;
+    declarations.push(`async function ${taskName}() {\n${indent(body, 2)}\n}`);
+    taskEntries.push({
+      label: `${def.label || '触发'} · ${trigger.id}`,
+      taskName,
+    });
+  }
+
+  const taskLines = [
+    'const __tasks = [',
+    ...taskEntries.map(
+      (entry) =>
+        `  { name: ${JSON.stringify(entry.label)}, run: () => ${entry.taskName}() },`
+    ),
+    '];',
+    'const __results = await Promise.allSettled(__tasks.map((task) => task.run()));',
+    'const __failed = [];',
+    '__results.forEach((result, index) => {',
+    '  if (result.status === "rejected") {',
+    '    const reason = result.reason && result.reason.message ? result.reason.message : String(result.reason);',
+    '    console.error("[触发任务失败] " + __tasks[index].name + ": " + reason);',
+    '    __failed.push(__tasks[index].name);',
+    '  }',
+    '});',
+    'if (__failed.length > 0) {',
+    '  throw new Error("部分触发任务执行失败：" + __failed.join(", "));',
+    '}',
+  ].join('\n');
 
   return (
     Compiler.generatePrepareCode(prepares) +
     declarations.join('\n\n') +
     (declarations.length ? '\n\n' : '') +
-    mainBody
+    taskLines
   );
 }
 

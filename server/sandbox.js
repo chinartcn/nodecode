@@ -131,10 +131,18 @@ export async function runInSandbox(code, options = {}) {
       displayErrors: true,
     });
 
-    const outcome = await Promise.race([result.then(() => null, (err) => err), hardTimeout]);
+    // 注意：vm 上下文里抛出的 Error 与宿主 realm 的 Error 不同源，
+    // 不能用 instanceof 判断，否则失败会被误判为成功。
+    const outcome = await Promise.race([
+      result.then(
+        () => null,
+        (err) => err || new Error('执行失败')
+      ),
+      hardTimeout,
+    ]);
     if (outcome === '__TIMEOUT__') {
       error = new Error(`执行超时（${timeoutMs}ms）`);
-    } else if (outcome instanceof Error) {
+    } else if (outcome) {
       error = outcome;
     }
   } catch (err) {
