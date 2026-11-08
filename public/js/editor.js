@@ -55,6 +55,7 @@ export class BlueprintEditor {
     this.selectedId = null;
     this.selectedIds = new Set();
     this.selectionMode = false;
+    this.multiDrag = false;
     this.marquee = null;
     this.pending = null;
     this.pointers = new Map();
@@ -133,6 +134,7 @@ export class BlueprintEditor {
     this.selectedId = nodeId || null;
     this.selectedIds.clear();
     if (nodeId) this.selectedIds.add(nodeId);
+    else this._resetMultiDrag();
     this.dirty = true;
     this._notifySelection();
   }
@@ -153,6 +155,7 @@ export class BlueprintEditor {
     this.selectedId = null;
     this.selectedIds.clear();
     this.marquee = null;
+    this._resetMultiDrag();
     this.dirty = true;
     this._notifySelection();
   }
@@ -274,6 +277,7 @@ export class BlueprintEditor {
     );
     this.selectedIds.clear();
     this.selectedId = null;
+    this._resetMultiDrag();
     this._connIndexDirty = true;
     this.dirty = true;
     this._recordHistory(before);
@@ -349,6 +353,7 @@ export class BlueprintEditor {
     const next = Boolean(enabled);
     if (this.selectionMode === next) return;
     this.selectionMode = next;
+    this.multiDrag = false;
     this.pending = null;
     this.marquee = null;
     this.down = null;
@@ -362,6 +367,22 @@ export class BlueprintEditor {
     this.dirty = true;
     this.options.onModeChange?.(next);
     this._notifySelection();
+  }
+
+  /** 整体拖拽开关：仅在框选模式且有选中节点时生效 */
+  setMultiDrag(enabled) {
+    const next = Boolean(enabled) && this.selectionMode;
+    if (this.multiDrag === next) return;
+    this.multiDrag = next;
+    this.down = null;
+    this.canvas.style.cursor = next ? 'move' : this.selectionMode ? 'crosshair' : '';
+    this.dirty = true;
+  }
+
+  _resetMultiDrag() {
+    if (!this.multiDrag) return;
+    this.multiDrag = false;
+    this.canvas.style.cursor = this.selectionMode ? 'crosshair' : '';
   }
 
   /* ---------------- 历史记录 ---------------- */
@@ -436,6 +457,7 @@ export class BlueprintEditor {
     this.graph = normalizeGraph(JSON.parse(serialized));
     this.selectedId = null;
     this.selectedIds.clear();
+    this.multiDrag = false;
     this.pending = null;
     this.marquee = null;
     this.down = null;
@@ -593,6 +615,30 @@ export class BlueprintEditor {
       this.pending = null;
       this.marquee = null;
       this.options.onHint?.(null);
+
+      // 开启整体拖拽后，按住任意已选节点可一起移动
+      if (this.multiDrag && this.selectedIds.size > 0) {
+        const hit = this._hitTest(point.x, point.y);
+        const hitNodeId = hit.type === 'node' || hit.type === 'pin' ? hit.nodeId : null;
+        if (hitNodeId && this.selectedIds.has(hitNodeId)) {
+          this._dragSnapshot = this._snapshot();
+          const starts = new Map();
+          for (const node of this.getSelectedNodes()) {
+            starts.set(node.id, { x: node.position.x, y: node.position.y });
+          }
+          this.down = {
+            pointerId: event.pointerId,
+            mode: 'multidrag',
+            start: point,
+            last: point,
+            moved: 0,
+            starts,
+          };
+          this.dirty = true;
+          return;
+        }
+      }
+
       this.down = {
         pointerId: event.pointerId,
         mode: 'marquee',
@@ -695,6 +741,20 @@ export class BlueprintEditor {
       return;
     }
 
+    if (drag.mode === 'multidrag') {
+      const dxWorld = (point.x - drag.start.x) / this.view.scale;
+      const dyWorld = (point.y - drag.start.y) / this.view.scale;
+      for (const node of this.getSelectedNodes()) {
+        const start = drag.starts.get(node.id);
+        if (start) {
+          node.position.x = start.x + dxWorld;
+          node.position.y = start.y + dyWorld;
+        }
+      }
+      this.dirty = true;
+      return;
+    }
+
     if (drag.mode === 'pan') {
       this.view.x += dx;
       this.view.y += dy;
@@ -727,6 +787,16 @@ export class BlueprintEditor {
 
     const point = this._screen(event);
     const isTap = drag.moved < 8;
+
+    if (drag.mode === 'multidrag') {
+      if (!isTap) {
+        if (this._dragSnapshot) this._recordHistory(this._dragSnapshot);
+        this.notifyChange();
+      }
+      this._dragSnapshot = null;
+      this.dirty = true;
+      return;
+    }
 
     if (drag.mode === 'marquee') {
       if (isTap) {

@@ -165,6 +165,7 @@ function refreshMultiToolbar() {
   toolbar.hidden = !show;
   if (!show) return;
   $('multi-count').textContent = `${count} 个`;
+  $('multi-drag').classList.toggle('active', editor.multiDrag);
   $('multi-copy').disabled = count === 0;
   $('multi-delete').disabled = count === 0;
   $('multi-paste').disabled = !editor.hasClipboard();
@@ -965,6 +966,12 @@ function bindUI() {
   $('btn-redo').addEventListener('click', () => editor.redo());
   $('btn-marquee').addEventListener('click', () => editor.setSelectionMode(!editor.selectionMode));
 
+  $('multi-drag').addEventListener('click', () => {
+    const next = !editor.multiDrag;
+    editor.setMultiDrag(next);
+    refreshMultiToolbar();
+    toast(next ? '整体拖拽已开启：按住选中节点拖动' : '整体拖拽已关闭');
+  });
   $('multi-copy').addEventListener('click', () => {
     const count = editor.getSelectedNodes().length;
     if (editor.copySelection()) {
