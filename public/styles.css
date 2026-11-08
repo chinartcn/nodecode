@@ -100,6 +100,10 @@ button {
   color: #f6c177;
 }
 
+#save-state.pending {
+  color: #f6c177;
+}
+
 #save-state.error {
   color: #ff8b8b;
 }

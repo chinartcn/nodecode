@@ -40,8 +40,8 @@ function shadeColor(hex, amount) {
 export class BlueprintEditor {
   constructor(canvas, options = {}) {
     this.canvas = canvas;
-    // alpha:false 减少合成开销，desynchronized 降低触控绘制延迟
-    this.ctx = canvas.getContext('2d', { alpha: false, desynchronized: true });
+    // alpha:false 减少合成开销；不使用 desynchronized，避免移动端重绘时文字闪烁/消失
+    this.ctx = canvas.getContext('2d', { alpha: false });
     this.options = options;
 
     this.graph = normalizeGraph({ nodes: [], connections: [], variables: [] });
@@ -66,8 +66,6 @@ export class BlueprintEditor {
     this._gridStep = 0;
     this._connectedPins = new Set();
     this._connIndexDirty = true;
-    this._interacting = false;
-    this._interactTimer = null;
 
     this._bindEvents();
     this._resize();
@@ -273,6 +271,35 @@ export class BlueprintEditor {
         }
       }
     });
+
+    // 后台挂起后 canvas 缓冲区可能被浏览器丢弃，回到前台必须强制重绘
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') {
+        this._resumeFromBackground();
+      } else {
+        this.options.onHidden?.();
+      }
+    });
+    window.addEventListener('pageshow', () => this._resumeFromBackground());
+    this.canvas.addEventListener('contextlost', (event) => {
+      event.preventDefault();
+      this._gridPattern = null;
+    });
+    this.canvas.addEventListener('contextrestored', () => {
+      this._gridPattern = null;
+      this._textCache.clear();
+      this.dirty = true;
+    });
+  }
+
+  _resumeFromBackground() {
+    // 尺寸重设会清空 canvas，同时重建网格图案，确保恢复后不会黑屏
+    this._resize();
+    this.dirty = true;
+    // 部分浏览器在 visibilitychange 之后才丢弃缓冲区，补一次延迟重绘
+    setTimeout(() => {
+      this.dirty = true;
+    }, 220);
   }
 
   _resize() {
@@ -302,8 +329,6 @@ export class BlueprintEditor {
     }
     const point = this._screen(event);
     this.pointers.set(event.pointerId, point);
-    this._interacting = true;
-    clearTimeout(this._interactTimer);
 
     if (this.pointers.size === 2) {
       this.down = null;
@@ -400,7 +425,6 @@ export class BlueprintEditor {
 
   _onPointerUp(event) {
     this.pointers.delete(event.pointerId);
-    if (this.pointers.size === 0) this._interacting = false;
 
     if (this.pinch) {
       if (this.pointers.size < 2) {
@@ -443,7 +467,6 @@ export class BlueprintEditor {
 
   _onPointerCancel(event) {
     this.pointers.delete(event.pointerId);
-    if (this.pointers.size === 0) this._interacting = false;
     if (this.pointers.size < 2) this.pinch = null;
     if (this.down && this.down.pointerId === event.pointerId) this.down = null;
     this.dirty = true;
@@ -451,19 +474,9 @@ export class BlueprintEditor {
 
   _onWheel(event) {
     event.preventDefault();
-    this._markInteracting();
     const point = this._screen(event);
     const factor = Math.exp(-event.deltaY * 0.0015);
     this._zoomAt(point, factor);
-  }
-
-  _markInteracting() {
-    this._interacting = true;
-    clearTimeout(this._interactTimer);
-    this._interactTimer = setTimeout(() => {
-      this._interacting = false;
-      this.dirty = true;
-    }, 160);
   }
 
   _zoomAt(point, factor) {
@@ -950,13 +963,12 @@ export class BlueprintEditor {
       );
     }
 
-    // 未连接输入的内联值预览（交互中跳过以降低绘制成本）
+    // 未连接输入的内联值预览
     if (
       pin.dir === 'in' &&
       pin.kind === 'port' &&
       pin.editor &&
       !connected &&
-      !this._interacting &&
       this.view.scale >= 0.55
     ) {
       const hasOutputLabel = layout.pins.some(

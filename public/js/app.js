@@ -13,7 +13,7 @@ const $ = (id) => document.getElementById(id);
 const canvas = $('canvas');
 
 const editor = new BlueprintEditor(canvas, {
-  onChange: scheduleSave,
+  onChange: markDirty,
   onSelect: refreshSelectionBar,
   onStructure: () => {
     refreshSelectionBar();
@@ -22,13 +22,15 @@ const editor = new BlueprintEditor(canvas, {
   },
   onConnectionTap: (connectionId) => askDeleteConnection(connectionId),
   onHint: handleHint,
+  onHidden: handlePageHidden,
 });
+
+const AUTOSAVE_KEY = 'codeck.autosaveMs';
+const AUTOSAVE_DEFAULT = 30000;
 
 let currentName = '我的蓝图';
 let examples = [];
 let openSheetName = null;
-let saveTimer = null;
-let saveSeq = 0;
 let confirmCallback = null;
 let toastTimer = null;
 let hintTimer = null;
@@ -36,10 +38,18 @@ let lastOutputText = '';
 let lastCode = '';
 let paletteState = { category: 'all', query: '' };
 
+let autoSaveMs = readAutoSaveSetting();
+let autoSaveTimer = null;
+let pendingChanges = false;
+let changeRevision = 0;
+let saving = false;
+let hiddenSaveInFlight = false;
+
 /* ---------------- 启动 ---------------- */
 
 async function boot() {
   bindUI();
+  setupAutoSave();
   renderPalette();
 
   try {
@@ -146,27 +156,95 @@ function askConfirm({ title, message, confirmText = '确定', onConfirm }) {
 
 /* ---------------- 保存 ---------------- */
 
+function readAutoSaveSetting() {
+  try {
+    const raw = localStorage.getItem(AUTOSAVE_KEY);
+    if (raw === null) return AUTOSAVE_DEFAULT;
+    const value = Number(raw);
+    return Number.isFinite(value) && value >= 0 ? value : AUTOSAVE_DEFAULT;
+  } catch {
+    return AUTOSAVE_DEFAULT;
+  }
+}
+
+function formatAutoSave(ms) {
+  if (!ms) return '已关闭';
+  if (ms < 60000) return `每 ${ms / 1000} 秒`;
+  return `每 ${ms / 60000} 分钟`;
+}
+
 function setSaveState(text, className = '') {
   const el = $('save-state');
   el.textContent = text;
   el.className = className;
 }
 
-function scheduleSave() {
-  setSaveState('保存中…', 'saving');
-  clearTimeout(saveTimer);
-  saveTimer = setTimeout(saveNow, 500);
+/** 改动只标记为未保存，由定时器统一写入 */
+function markDirty() {
+  pendingChanges = true;
+  changeRevision += 1;
+  setSaveState(autoSaveMs > 0 ? '未保存' : '未保存 · 自动保存已关闭', 'pending');
 }
 
-async function saveNow() {
-  const seq = ++saveSeq;
+function setupAutoSave() {
+  clearInterval(autoSaveTimer);
+  autoSaveTimer = null;
+  if (autoSaveMs > 0) {
+    autoSaveTimer = setInterval(() => {
+      if (pendingChanges) saveNow();
+    }, autoSaveMs);
+  }
+  const select = $('autosave-interval');
+  if (select) select.value = String(autoSaveMs);
+}
+
+async function saveNow({ manual = false } = {}) {
+  if (saving) {
+    if (manual) toast('正在保存，请稍候');
+    return;
+  }
+  if (!pendingChanges && !manual) return;
+
+  saving = true;
+  const revision = changeRevision;
+  setSaveState('保存中…', 'saving');
   try {
     await api.saveState({ name: currentName, graph: editor.getGraph() });
-    if (seq === saveSeq) setSaveState('已保存');
+    if (revision === changeRevision) {
+      pendingChanges = false;
+      setSaveState('已保存');
+    } else {
+      setSaveState(autoSaveMs > 0 ? '未保存' : '未保存 · 自动保存已关闭', 'pending');
+    }
     updateStats();
+    if (manual) toast('已保存');
   } catch (error) {
-    if (seq === saveSeq) setSaveState('保存失败', 'error');
+    setSaveState('保存失败', 'error');
+    if (manual) toast(`保存失败：${error.message}`);
+  } finally {
+    saving = false;
   }
+}
+
+/** 页面隐藏 / 关闭时用 keepalive 请求兜底保存 */
+function handlePageHidden() {
+  if (!pendingChanges || hiddenSaveInFlight) return;
+  hiddenSaveInFlight = true;
+  const revision = changeRevision;
+  const body = JSON.stringify({ name: currentName, graph: editor.getGraph() });
+  fetch('/api/state', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body,
+    keepalive: true,
+  })
+    .then((response) => {
+      if (response.ok && revision === changeRevision) pendingChanges = false;
+    })
+    .catch(() => {})
+    .finally(() => {
+      hiddenSaveInFlight = false;
+    });
 }
 
 /* ---------------- 节点面板 ---------------- */
@@ -643,7 +721,7 @@ function renderExamples() {
           editor.setGraph(example.graph);
           closeSheet('menu');
           updateStats();
-          scheduleSave();
+          markDirty();
           toast('已加载示例');
         },
       });
@@ -853,8 +931,23 @@ function bindUI() {
 
   $('blueprint-name').addEventListener('input', (event) => {
     currentName = event.target.value.trim() || '我的蓝图';
-    scheduleSave();
+    markDirty();
   });
+
+  $('autosave-interval').addEventListener('change', (event) => {
+    autoSaveMs = Number(event.target.value) || 0;
+    try {
+      localStorage.setItem(AUTOSAVE_KEY, String(autoSaveMs));
+    } catch {
+      /* 隐私模式可能禁用 localStorage */
+    }
+    setupAutoSave();
+    toast(`自动保存：${formatAutoSave(autoSaveMs)}`);
+  });
+
+  $('save-now').addEventListener('click', () => saveNow({ manual: true }));
+
+  window.addEventListener('pagehide', handlePageHidden);
 
   $('open-variables').addEventListener('click', () => {
     closeSheet('menu');
@@ -872,7 +965,7 @@ function bindUI() {
         editor.setGraph({ nodes: [], connections: [], variables: [] });
         closeSheet('menu');
         updateStats();
-        scheduleSave();
+        markDirty();
         toast('画布已清空');
       },
     });
