@@ -51,6 +51,7 @@ const AUTOSAVE_KEY = 'codeck.autosaveMs';
 const AUTOSAVE_DEFAULT = 30000;
 const PALETTE_COMPACT_KEY = 'codeck.palette.compact';
 const PALETTE_COLUMNS_KEY = 'codeck.palette.columns';
+const NODE_CARD_POS_KEY = 'codeck.nodeCardPos';
 
 let currentName = '我的蓝图';
 let examples = [];
@@ -79,6 +80,7 @@ let externalNodeDefs = [];
 let nodeCatalog = [];
 let nodeCardNodeId = null;
 let nodeCardDrag = null;
+let nodeCardPosition = readNodeCardPosition();
 
 // 浏览器全局 SDK（window.NodeCode）
 const sdkListeners = {
@@ -1227,6 +1229,38 @@ function hideNodeCard() {
   nodeCardDrag = null;
 }
 
+function readNodeCardPosition() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(NODE_CARD_POS_KEY) || 'null');
+    if (raw && Number.isFinite(raw.left) && Number.isFinite(raw.top)) {
+      return { left: raw.left, top: raw.top };
+    }
+  } catch {
+    /* ignore */
+  }
+  return null;
+}
+
+function saveNodeCardPosition(position) {
+  nodeCardPosition = position;
+  try {
+    localStorage.setItem(NODE_CARD_POS_KEY, JSON.stringify(position));
+  } catch {
+    /* ignore */
+  }
+}
+
+function clampNodeCardPosition(left, top) {
+  const card = $('node-card');
+  const stageRect = $('stage').getBoundingClientRect();
+  const maxLeft = Math.max(8, stageRect.width - card.offsetWidth - 8);
+  const maxTop = Math.max(8, stageRect.height - card.offsetHeight - 8);
+  return {
+    left: Math.max(8, Math.min(left, maxLeft)),
+    top: Math.max(8, Math.min(top, maxTop)),
+  };
+}
+
 function showNodeCard(nodeId) {
   const node = editor.getNode(nodeId);
   if (!node) {
@@ -1306,10 +1340,19 @@ function positionNodeCard(node) {
     if (!card || card.hidden) return;
     const stage = $('stage');
     const stageRect = stage.getBoundingClientRect();
+    const cardRect = card.getBoundingClientRect();
+
+    // 用户拖动过浮窗后，后续所有节点都使用记住的位置
+    if (nodeCardPosition) {
+      const position = clampNodeCardPosition(nodeCardPosition.left, nodeCardPosition.top);
+      card.style.left = `${position.left}px`;
+      card.style.top = `${position.top}px`;
+      return;
+    }
+
     const screen = editor.worldToScreen(node.position.x, node.position.y);
     const layout = getNodeLayout(node);
     const width = (layout?.width || 200) * editor.view.scale;
-    const cardRect = card.getBoundingClientRect();
 
     let left = screen.x + width + 12;
     let top = screen.y;
@@ -2202,6 +2245,7 @@ function bindUI() {
       startY: event.clientY,
       left: cardRect.left - stageRect.left,
       top: cardRect.top - stageRect.top,
+      moved: 0,
     };
     cardHead.setPointerCapture?.(event.pointerId);
     event.preventDefault();
@@ -2211,6 +2255,10 @@ function bindUI() {
     if (!nodeCardDrag || nodeCardDrag.pointerId !== event.pointerId) return;
     const stageRect = $('stage').getBoundingClientRect();
     const card = $('node-card');
+    nodeCardDrag.moved = Math.max(
+      nodeCardDrag.moved,
+      Math.hypot(event.clientX - nodeCardDrag.startX, event.clientY - nodeCardDrag.startY)
+    );
     const left = Math.max(
       8,
       Math.min(
@@ -2230,6 +2278,16 @@ function bindUI() {
   });
 
   const endCardDrag = () => {
+    if (nodeCardDrag && nodeCardDrag.moved > 4) {
+      const card = $('node-card');
+      const position = clampNodeCardPosition(
+        Number.parseFloat(card.style.left) || 0,
+        Number.parseFloat(card.style.top) || 0
+      );
+      card.style.left = `${position.left}px`;
+      card.style.top = `${position.top}px`;
+      saveNodeCardPosition(position);
+    }
     nodeCardDrag = null;
   };
   cardHead.addEventListener('pointerup', endCardDrag);
@@ -2319,6 +2377,14 @@ function bindUI() {
 
   window.addEventListener('pagehide', handlePageHidden);
   window.addEventListener('resize', updatePaletteInset);
+  window.addEventListener('resize', () => {
+    if (!nodeCardPosition) return;
+    const card = $('node-card');
+    if (!card || card.hidden) return;
+    const position = clampNodeCardPosition(nodeCardPosition.left, nodeCardPosition.top);
+    card.style.left = `${position.left}px`;
+    card.style.top = `${position.top}px`;
+  });
 
   $('open-variables').addEventListener('click', () => {
     closeSheet('menu');
