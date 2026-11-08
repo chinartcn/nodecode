@@ -77,6 +77,8 @@ let signatureFunctionId = null;
 let signatureDraft = { name: '', inputs: [], outputs: [] };
 let externalNodeDefs = [];
 let nodeCatalog = [];
+let nodeCardNodeId = null;
+let nodeCardDrag = null;
 
 // 浏览器全局 SDK（window.NodeCode）
 const sdkListeners = {
@@ -100,6 +102,9 @@ let hiddenSaveInFlight = false;
 function handleEditorChange() {
   markDirty();
   emitSdk('change', { scope: currentScope });
+  const card = $('node-card');
+  const node = editor.getSelectedNode();
+  if (card && !card.hidden && node) positionNodeCard(node);
 }
 
 function emitSdk(event, payload) {
@@ -289,6 +294,9 @@ function openSheet(name) {
   const sheet = $(`sheet-${name}`);
   if (!sheet) return;
   const floating = name === 'palette';
+  const card = $('node-card');
+  if (card) card.hidden = true;
+  nodeCardNodeId = null;
   sheet.classList.add('open');
   sheet.setAttribute('aria-hidden', 'false');
   if (floating) $('scrim').classList.remove('show');
@@ -354,11 +362,15 @@ function applyPaletteLayout() {
 function handleSelectionChange() {
   refreshSelectionBar();
   refreshMultiToolbar();
+  const node = editor.getSelectedNode();
+  if (!node || editor.selectionMode || node.id !== nodeCardNodeId) {
+    hideNodeCard();
+  }
 }
 
 function handleNodeTap(node) {
   if (!node || editor.selectionMode) return;
-  openInspector(node.id);
+  showNodeCard(node.id);
 }
 
 function handleSelectionModeChange(enabled) {
@@ -582,7 +594,10 @@ function addFunctionCall(fnId) {
   applyFunctionNodeDefs(workspace.functions);
   const node = editor.addNode(functionCallDefName(fnId));
   closeSheet('functions');
-  if (node) toast(`已添加调用：${fn.name}`);
+  if (node) {
+    toast(`已添加调用：${fn.name}`);
+    showNodeCard(node.id);
+  }
 }
 
 function createEmptyFunction(name) {
@@ -1188,14 +1203,125 @@ function renderPalette() {
 
 /* ---------------- 属性检查器 ---------------- */
 
-function openInspector(nodeId) {
+function openInspector(nodeId, options = {}) {
   editor.selectNode(nodeId);
   renderInspector();
   openSheet('inspector');
+  if (options.fullscreen) {
+    $('sheet-inspector').classList.add('fullscreen');
+    $('inspector-fullscreen').textContent = '退出全屏';
+  }
 }
 
 function refreshInspector() {
   if (openSheetName === 'inspector') renderInspector();
+  else if (!$('node-card').hidden) renderNodeCard();
+}
+
+/* ---------------- 节点浮窗编辑卡片 ---------------- */
+
+function hideNodeCard() {
+  const card = $('node-card');
+  if (card) card.hidden = true;
+  nodeCardNodeId = null;
+  nodeCardDrag = null;
+}
+
+function showNodeCard(nodeId) {
+  const node = editor.getNode(nodeId);
+  if (!node) {
+    hideNodeCard();
+    return;
+  }
+  if (openSheetName === 'palette') closeSheet('palette');
+  if (openSheetName) return;
+
+  nodeCardNodeId = node.id;
+  const card = $('node-card');
+  card.hidden = false;
+  renderNodeCard();
+}
+
+function renderNodeCard() {
+  const node = editor.getSelectedNode();
+  if (!node) {
+    hideNodeCard();
+    return;
+  }
+  const def = getNodeDef(node.name);
+  if (!def) {
+    hideNodeCard();
+    return;
+  }
+
+  const suffix =
+    (node.name === 'varget' || node.name === 'varset') && node.data?.name
+      ? ` · ${node.data.name}`
+      : '';
+  $('node-card-title').textContent = def.label + suffix;
+  $('node-card-dot').style.background = NODE_TYPE_COLORS[def.type] || '#4da3ff';
+
+  const body = $('node-card-body');
+  body.replaceChildren();
+
+  if (node.name.startsWith('fncall:')) {
+    body.append(buildFunctionCallActions(node));
+  }
+  if (node.name === 'varget' || node.name === 'varset') {
+    body.append(buildVariablePicker(node));
+  }
+
+  const fields = def.pins.filter(
+    (pin) => pin.kind === 'port' && pin.dir === 'in' && pin.editor
+  );
+  if (!fields.length && node.name !== 'varget' && node.name !== 'varset') {
+    body.append(div('empty', '该节点没有可编辑参数，通过端点连线使用。'));
+  }
+  for (const pin of fields) {
+    if (editor.isPinConnected(node.id, pin.name, 'in')) {
+      body.append(buildConnectedRow(pin));
+    } else {
+      body.append(buildField(node, pin));
+    }
+  }
+
+  if (def.type === 'begin') {
+    body.append(div('empty', '开始节点不能删除。'));
+  } else {
+    const actions = div('inspector-actions');
+    const remove = document.createElement('button');
+    remove.className = 'danger-outline';
+    remove.textContent = '删除此节点';
+    remove.addEventListener('click', () => askDeleteNode(node.id));
+    actions.append(remove);
+    body.append(actions);
+  }
+
+  positionNodeCard(node);
+}
+
+function positionNodeCard(node) {
+  const card = $('node-card');
+  requestAnimationFrame(() => {
+    if (!card || card.hidden) return;
+    const stage = $('stage');
+    const stageRect = stage.getBoundingClientRect();
+    const screen = editor.worldToScreen(node.position.x, node.position.y);
+    const layout = getNodeLayout(node);
+    const width = (layout?.width || 200) * editor.view.scale;
+    const cardRect = card.getBoundingClientRect();
+
+    let left = screen.x + width + 12;
+    let top = screen.y;
+    if (left + cardRect.width > stageRect.width - 8) {
+      left = screen.x - cardRect.width - 12;
+    }
+    left = Math.max(8, Math.min(left, stageRect.width - cardRect.width - 8));
+    top = Math.max(8, Math.min(top, stageRect.height - cardRect.height - 8));
+
+    card.style.left = `${left}px`;
+    card.style.top = `${top}px`;
+  });
 }
 
 function renderInspector() {
@@ -1333,7 +1459,7 @@ function buildVariablePicker(node) {
   select.value = node.data?.name || '';
   select.addEventListener('change', () => {
     editor.updateNodeData(node.id, 'name', select.value);
-    renderInspector();
+    refreshInspector();
     refreshSelectionBar();
   });
   wrap.append(title, select);
@@ -1492,7 +1618,7 @@ function renderVariables() {
     getButton.addEventListener('click', () => {
       const node = editor.addNode('varget', { name: variable.name });
       closeSheet('variables');
-      if (node) openInspector(node.id);
+      if (node) showNodeCard(node.id);
     });
 
     const setButton = document.createElement('button');
@@ -1500,7 +1626,7 @@ function renderVariables() {
     setButton.addEventListener('click', () => {
       const node = editor.addNode('varset', { name: variable.name });
       closeSheet('variables');
-      if (node) openInspector(node.id);
+      if (node) showNodeCard(node.id);
     });
 
     const removeButton = document.createElement('button');
@@ -2056,6 +2182,58 @@ function bindUI() {
     sheet.classList.toggle('fullscreen', next);
     $('inspector-fullscreen').textContent = next ? '退出全屏' : '全屏';
   });
+
+  $('node-card-close').addEventListener('click', () => hideNodeCard());
+  $('node-card-fullscreen').addEventListener('click', () => {
+    const node = editor.getSelectedNode();
+    if (node) openInspector(node.id, { fullscreen: true });
+  });
+
+  const cardHead = $('node-card-head');
+  cardHead.addEventListener('pointerdown', (event) => {
+    if (event.target.closest('button')) return;
+    const stage = $('stage');
+    const card = $('node-card');
+    const cardRect = card.getBoundingClientRect();
+    const stageRect = stage.getBoundingClientRect();
+    nodeCardDrag = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      left: cardRect.left - stageRect.left,
+      top: cardRect.top - stageRect.top,
+    };
+    cardHead.setPointerCapture?.(event.pointerId);
+    event.preventDefault();
+  });
+
+  cardHead.addEventListener('pointermove', (event) => {
+    if (!nodeCardDrag || nodeCardDrag.pointerId !== event.pointerId) return;
+    const stageRect = $('stage').getBoundingClientRect();
+    const card = $('node-card');
+    const left = Math.max(
+      8,
+      Math.min(
+        nodeCardDrag.left + (event.clientX - nodeCardDrag.startX),
+        stageRect.width - card.offsetWidth - 8
+      )
+    );
+    const top = Math.max(
+      8,
+      Math.min(
+        nodeCardDrag.top + (event.clientY - nodeCardDrag.startY),
+        stageRect.height - card.offsetHeight - 8
+      )
+    );
+    card.style.left = `${left}px`;
+    card.style.top = `${top}px`;
+  });
+
+  const endCardDrag = () => {
+    nodeCardDrag = null;
+  };
+  cardHead.addEventListener('pointerup', endCardDrag);
+  cardHead.addEventListener('pointercancel', endCardDrag);
   $('open-functions').addEventListener('click', () => {
     closeSheet('menu');
     openFunctions();
@@ -2108,7 +2286,7 @@ function bindUI() {
 
   $('selection-edit').addEventListener('click', () => {
     const node = editor.getSelectedNode();
-    if (node) openInspector(node.id);
+    if (node) showNodeCard(node.id);
   });
   $('selection-delete').addEventListener('click', () => {
     const node = editor.getSelectedNode();
