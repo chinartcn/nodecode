@@ -430,6 +430,13 @@ export class BlueprintEditor {
     return this._future.length > 0;
   }
 
+  clearHistory() {
+    this._history.length = 0;
+    this._future.length = 0;
+    this._historyGroup = null;
+    this._notifyHistory();
+  }
+
   undo() {
     if (!this._history.length) return false;
     const current = this._snapshot();

@@ -49,11 +49,17 @@
           <button id="btn-marquee" aria-label="框选模式" title="框选模式">▭</button>
         </div>
 
+        <div class="scope-bar" id="scope-bar" hidden>
+          <button id="scope-back">‹ 主图</button>
+          <span id="scope-name">函数</span>
+        </div>
+
         <button class="fab" id="btn-add" aria-label="添加节点">＋</button>
 
         <div class="selection-bar" id="selection-bar" hidden>
           <span class="dot" id="selection-dot"></span>
           <span class="selection-title" id="selection-title">节点</span>
+          <button id="selection-wrap" class="mini-btn">封装</button>
           <button id="selection-edit" class="mini-btn">编辑</button>
           <button id="selection-delete" class="mini-btn danger">删除</button>
           <button id="selection-close" class="icon-mini" aria-label="取消选择">×</button>
@@ -62,6 +68,7 @@
         <div class="multi-toolbar" id="multi-toolbar" hidden>
           <span class="multi-count" id="multi-count">0 个</span>
           <button id="multi-drag" title="开启后按住选中节点可整体拖拽">拖拽</button>
+          <button id="multi-wrap">封装</button>
           <button id="multi-copy">复制</button>
           <button id="multi-paste">粘贴</button>
           <button id="multi-delete" class="danger">删除</button>
@@ -180,6 +187,9 @@
 
           <div class="menu-group">
             <h3>工作区</h3>
+            <button class="row-btn" id="open-functions">
+              函数管理 <span id="function-count" class="badge">0</span>
+            </button>
             <button class="row-btn" id="open-variables">
               变量管理 <span id="variable-count" class="badge">0</span>
             </button>
@@ -219,6 +229,65 @@
             </div>
             <input id="var-value" type="text" placeholder="默认值（对象 / 数组请填 JSON）" autocomplete="off" />
             <button class="primary-btn wide" id="var-add">添加变量</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- 函数管理 -->
+      <section class="sheet" id="sheet-functions" aria-hidden="true">
+        <div class="sheet-head">
+          <div>
+            <h2>函数管理</h2>
+            <p class="sub">把节点封装成可复用的黑盒函数</p>
+          </div>
+          <button class="text-btn" data-close>关闭</button>
+        </div>
+        <div class="sheet-body">
+          <div class="node-list" id="function-list"></div>
+          <div class="add-var">
+            <h3>新建函数</h3>
+            <p class="hint">创建一个空函数，然后进入函数内部添加节点。</p>
+            <button class="primary-btn wide" id="create-function">新建空函数</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- 函数签名 -->
+      <section class="sheet" id="sheet-signature" aria-hidden="true">
+        <div class="sheet-head">
+          <div>
+            <h2>函数设置</h2>
+            <p class="sub" id="signature-sub"></p>
+          </div>
+          <button class="text-btn" data-close>关闭</button>
+        </div>
+        <div class="sheet-body">
+          <label class="field">
+            <span>函数名</span>
+            <input id="signature-name" type="text" maxlength="40" placeholder="函数名" />
+          </label>
+
+          <h3 class="group-title">输入参数</h3>
+          <div class="sig-list" id="signature-inputs"></div>
+          <button class="row-btn" id="signature-add-input">＋ 添加输入</button>
+
+          <h3 class="group-title">输出参数</h3>
+          <div class="sig-list" id="signature-outputs"></div>
+          <button class="row-btn" id="signature-add-output">＋ 添加输出</button>
+
+          <button class="primary-btn wide" id="signature-save">保存设置</button>
+        </div>
+      </section>
+
+      <!-- 函数名称 -->
+      <section class="sheet small" id="sheet-fnname" aria-hidden="true">
+        <div class="sheet-body">
+          <h2 id="fn-name-title">函数名称</h2>
+          <p class="confirm-text" id="fn-name-hint"></p>
+          <input id="fn-name-input" type="text" maxlength="40" placeholder="函数名" />
+          <div class="confirm-actions">
+            <button class="ghost-btn" data-close>取消</button>
+            <button class="primary-btn" id="fn-name-ok">确定</button>
           </div>
         </div>
       </section>

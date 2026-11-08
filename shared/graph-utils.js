@@ -10,7 +10,9 @@ import {
   NODE_HEADER_HEIGHT,
   NODE_ROW_HEIGHT,
   getNodeDef,
+  setDynamicNodeDefs,
 } from './node-defs.js';
+import { buildFunctionNodeDefs } from './function-defs.js';
 
 export function generateId(prefix = 'n') {
   return `${prefix}_${Math.random().toString(36).slice(2, 8)}${Date.now().toString(36).slice(-3)}`;
@@ -152,6 +154,64 @@ export function buildConnection(graph, from, to) {
 
 /** 归一化任意来源的图数据，保证编辑器拿到的是安全结构 */
 export function normalizeGraph(raw) {
+  const source = raw && typeof raw === 'object' ? raw : {};
+
+  // 先归一化函数元信息，再注册动态节点定义，最后处理各子图连线
+  const functions = normalizeFunctions(source.functions);
+  if (functions.length > 0) {
+    setDynamicNodeDefs(buildFunctionNodeDefs(functions));
+  }
+  for (const fn of functions) {
+    fn.graph = normalizeScope(fn.graph);
+  }
+
+  const scope = normalizeScope(source);
+  return { ...scope, functions };
+}
+
+function normalizeSignature(list, prefix) {
+  if (!Array.isArray(list)) return [];
+  const usedIds = new Set();
+  return list
+    .map((item, index) => {
+      if (!item || typeof item !== 'object') return null;
+      let id = String(item.id || '').trim();
+      if (!id || usedIds.has(id)) id = generateId(prefix);
+      usedIds.add(id);
+      const name = String(item.name || '').trim();
+      return {
+        id,
+        name: name || `${prefix === 'i' ? '输入' : '输出'}${index + 1}`,
+        type: ['string', 'number', 'boolean', 'object', 'array'].includes(item.type)
+          ? item.type
+          : 'string',
+      };
+    })
+    .filter(Boolean);
+}
+
+function normalizeFunctions(list) {
+  if (!Array.isArray(list)) return [];
+  const usedIds = new Set();
+  return list
+    .map((rawFn, index) => {
+      if (!rawFn || typeof rawFn !== 'object') return null;
+      let id = String(rawFn.id || '').trim();
+      if (!id || usedIds.has(id)) id = generateId('fn');
+      usedIds.add(id);
+      return {
+        id,
+        name: String(rawFn.name || '').trim() || `函数${index + 1}`,
+        inputs: normalizeSignature(rawFn.inputs, 'i'),
+        outputs: normalizeSignature(rawFn.outputs, 'o'),
+        graph: rawFn.graph && typeof rawFn.graph === 'object' ? rawFn.graph : {},
+      };
+    })
+    .filter(Boolean);
+}
+
+/** 归一化单张图（主图或某个函数内部图） */
+function normalizeScope(raw) {
   const source = raw && typeof raw === 'object' ? raw : {};
   const nodes = [];
 

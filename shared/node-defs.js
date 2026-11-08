@@ -21,12 +21,14 @@ export const CATEGORY_LABELS = {
   core: '核心',
   logic: '逻辑',
   data: '数据',
+  function: '函数',
 };
 
 export const CATEGORY_COLORS = {
   core: '#4da3ff',
   logic: '#a29bfe',
   data: '#4dd0c1',
+  function: '#e84393',
 };
 
 /** 缩进一段代码 */
@@ -419,8 +421,19 @@ ${block(branch('onFailed'), 2)}
 
 const DEF_MAP = new Map(nodeDefs.map((def) => [def.name, def]));
 
+// 动态节点定义（用户创建的函数：调用节点、输入节点、输出节点）
+const DYNAMIC_DEFS = new Map();
+
+/** 用当前文档中的函数定义重建动态节点注册表 */
+export function setDynamicNodeDefs(defs) {
+  DYNAMIC_DEFS.clear();
+  for (const def of defs || []) {
+    if (def && def.name) DYNAMIC_DEFS.set(def.name, def);
+  }
+}
+
 export function getNodeDef(name) {
-  return DEF_MAP.get(name) || null;
+  return DEF_MAP.get(name) || DYNAMIC_DEFS.get(name) || null;
 }
 
 /** 可在节点面板中展示的节点 */

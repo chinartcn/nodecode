@@ -6,7 +6,16 @@
  * 3. 数据端点（port）通过连线递归解析为表达式
  */
 
-import { EXEC_IN, EXEC_OUT, block, getNodeDef, indent, isValidIdentifier } from '../shared/node-defs.js';
+import {
+  EXEC_IN,
+  EXEC_OUT,
+  block,
+  getNodeDef,
+  indent,
+  isValidIdentifier,
+  setDynamicNodeDefs,
+} from '../shared/node-defs.js';
+import { buildFunctionNodeDefs, functionArgName, getFunctionJsName } from '../shared/function-defs.js';
 
 /** 将节点内联输入值转换为 JS 字面量表达式 */
 function emitLiteral(editor, value) {
@@ -55,24 +64,30 @@ function emitVariable(variable) {
 }
 
 export class Compiler {
-  constructor(graph) {
+  constructor(graph, options = {}) {
     this.graph = graph;
     this.nodeMap = Object.fromEntries((graph.nodes || []).map((node) => [node.id, node]));
     this.connections = graph.connections || [];
-    this.prepares = [];
+    this.prepares = options.prepares || [];
+    this.functionMap = options.functionMap || new Map();
     this._execActive = new Set();
     this._dataStack = [];
     this.printComment = true;
   }
 
   generate() {
+    const body = this.generateBody();
+    return Compiler.generatePrepareCode(this.prepares) + body;
+  }
+
+  /** 生成变量声明 + 执行流代码（不含 prepare 函数） */
+  generateBody() {
     const begin = this.findBegin();
     this.collectPrepare(getNodeDef(begin.name));
 
     let body = this.generateVariables();
     body += this.generateCodeFromNode(this.getExecNext(begin.id));
-
-    return this.generatePrepareCode() + body;
+    return body;
   }
 
   generateVariables() {
@@ -91,7 +106,9 @@ export class Compiler {
   }
 
   buildPinVarName(pinName, nodeId) {
-    return `_${String(nodeId).replace(/[^A-Za-z0-9_$]/g, '_')}_${pinName}`;
+    const safeNode = String(nodeId).replace(/[^A-Za-z0-9_$]/g, '_');
+    const safePin = String(pinName).replace(/[^A-Za-z0-9_$]/g, '_');
+    return `_${safeNode}_${safePin}`;
   }
 
   buildContext(node) {
@@ -173,7 +190,12 @@ export class Compiler {
         if (!def) break;
         this.collectPrepare(def);
 
-        if (typeof def.code === 'function') {
+        if (current.name.startsWith('fncall:')) {
+          if (this.printComment) {
+            code += `// 调用函数 ${def.label} · ${current.id}\n`;
+          }
+          code += this.generateFunctionCall(current);
+        } else if (typeof def.code === 'function') {
           if (this.printComment) {
             code += `// ${def.label} · ${current.id}\n`;
           }
@@ -186,6 +208,29 @@ export class Compiler {
       for (const id of chain) this._execActive.delete(id);
     }
 
+    return code;
+  }
+
+  /** 生成函数调用代码（函数内部支持 await / 嵌套调用） */
+  generateFunctionCall(node) {
+    const fnId = node.name.slice('fncall:'.length);
+    const fn = this.functionMap.get(fnId);
+    if (!fn) throw new Error('调用了不存在的函数，请删除该调用节点');
+
+    const args = (fn.inputs || []).map((entry) =>
+      this.getInputCode(`i_${entry.id}`, node.id)
+    );
+    const jsName = getFunctionJsName(fn);
+
+    if (!(fn.outputs || []).length) {
+      return `await ${jsName}(${args.join(', ')});\n`;
+    }
+
+    const resultVar = this.buildPinVarName('result', node.id);
+    let code = `const ${resultVar} = await ${jsName}(${args.join(', ')});\n`;
+    for (const entry of fn.outputs) {
+      code += `const ${this.buildPinVarName(`o_${entry.id}`, node.id)} = ${resultVar} == null ? undefined : ${resultVar}[${JSON.stringify(entry.id)}];\n`;
+    }
     return code;
   }
 
@@ -216,8 +261,8 @@ export class Compiler {
     }
   }
 
-  generatePrepareCode() {
-    const functions = this.prepares.filter((item) => item.type === 'function');
+  static generatePrepareCode(prepares) {
+    const functions = (prepares || []).filter((item) => item.type === 'function');
     if (functions.length === 0) return '';
     return (
       functions
@@ -239,8 +284,63 @@ export class Compiler {
   }
 }
 
+/** 检测函数之间的循环调用 */
+function assertNoFunctionCycles(functions) {
+  const edges = new Map();
+  for (const fn of functions) {
+    const targets = new Set();
+    for (const node of fn.graph?.nodes || []) {
+      if (typeof node.name === 'string' && node.name.startsWith('fncall:')) {
+        targets.add(node.name.slice('fncall:'.length));
+      }
+    }
+    edges.set(fn.id, targets);
+  }
+
+  const state = new Map();
+  const visit = (id) => {
+    const current = state.get(id) || 0;
+    if (current === 1) throw new Error('函数存在循环调用，请检查嵌套关系');
+    if (current === 2) return;
+    state.set(id, 1);
+    for (const next of edges.get(id) || []) {
+      if (edges.has(next)) visit(next);
+    }
+    state.set(id, 2);
+  };
+  for (const fn of functions) visit(fn.id);
+}
+
 export function compileGraph(graph) {
-  return new Compiler(graph).generate();
+  const functions = Array.isArray(graph.functions) ? graph.functions : [];
+  setDynamicNodeDefs(buildFunctionNodeDefs(functions));
+  assertNoFunctionCycles(functions);
+
+  const functionMap = new Map(functions.map((fn) => [fn.id, fn]));
+  const prepares = [];
+  const declarations = [];
+
+  for (const fn of functions) {
+    const compiler = new Compiler(fn.graph || {}, { prepares, functionMap });
+    const body = compiler.generateBody();
+    const parameters = (fn.inputs || []).map((entry) => functionArgName(entry.id)).join(', ');
+    declarations.push(
+      `async function ${getFunctionJsName(fn)}(${parameters}) {\n  let __fnResult = {};\n${indent(body, 2)}\n  return __fnResult;\n}`
+    );
+  }
+
+  const mainCompiler = new Compiler(
+    { nodes: graph.nodes, connections: graph.connections, variables: graph.variables },
+    { prepares, functionMap }
+  );
+  const mainBody = mainCompiler.generateBody();
+
+  return (
+    Compiler.generatePrepareCode(prepares) +
+    declarations.join('\n\n') +
+    (declarations.length ? '\n\n' : '') +
+    mainBody
+  );
 }
 
 export { EXEC_IN, EXEC_OUT };
