@@ -50,6 +50,8 @@ let currentName = '我的蓝图';
 let examples = [];
 let openSheetName = null;
 let confirmCallback = null;
+let promptCallback = null;
+let promptReopen = null;
 let toastTimer = null;
 let hintTimer = null;
 let lastOutputText = '';
@@ -170,6 +172,18 @@ const NodeCodeApi = {
   getAbi: () => api.getAbi(),
   getNodeCatalog: () => api.getNodeCatalog(),
   getSelection: () => editor.getSelectedNodes(),
+  listBlueprints: () => api.listBlueprints(),
+  saveBlueprint: (name) => api.createBlueprint({ name, graph: getWorkspaceGraph() }),
+  loadBlueprint: async (id) => {
+    const blueprint = await api.getBlueprint(id);
+    currentName = blueprint.name;
+    $('blueprint-name').value = currentName;
+    loadWorkspace(blueprint.graph);
+    markDirty();
+    await saveNow();
+    return getWorkspaceGraph();
+  },
+  deleteBlueprint: (id) => api.deleteBlueprint(id),
   selectNode: (id) => editor.selectNode(id),
   addNode: (name, data) => editor.addNode(name, data),
   removeNode: (id) => editor.deleteNode(id),
@@ -252,6 +266,7 @@ async function boot() {
   updateScopeBar();
   requestAnimationFrame(() => editor.fitView());
   setTimeout(() => $('tip').classList.add('hide'), 5200);
+  refreshBlueprintBadge();
   sdkReadyResolve?.(window.NodeCode);
 }
 
@@ -1538,6 +1553,200 @@ function renderExamples() {
   }
 }
 
+/* ---------------- 通用名称输入 ---------------- */
+
+function openPrompt({
+  title,
+  hint = '',
+  value = '',
+  confirmText = '确定',
+  reopen = null,
+  onConfirm,
+}) {
+  promptCallback = onConfirm;
+  promptReopen = reopen;
+  $('prompt-title').textContent = title;
+  $('prompt-hint').textContent = hint;
+  $('prompt-input').value = value;
+  $('prompt-ok').textContent = confirmText;
+  openSheet('prompt');
+  setTimeout(() => {
+    const input = $('prompt-input');
+    input.focus();
+    input.select();
+  }, 260);
+}
+
+async function confirmPrompt() {
+  const value = $('prompt-input').value.trim();
+  if (!value) {
+    toast('请输入名称');
+    return;
+  }
+  const callback = promptCallback;
+  const reopen = promptReopen;
+  promptCallback = null;
+  promptReopen = null;
+  closeSheet('prompt');
+  try {
+    await callback?.(value);
+  } catch (error) {
+    toast(error.message || '操作失败');
+  }
+  if (reopen) reopen();
+}
+
+/* ---------------- 蓝图库 ---------------- */
+
+function formatBlueprintTime(value) {
+  if (!value) return '';
+  try {
+    return new Date(value).toLocaleString('zh-CN', {
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+  } catch {
+    return '';
+  }
+}
+
+async function refreshBlueprintBadge() {
+  try {
+    const data = await api.listBlueprints();
+    const list = data.blueprints || [];
+    const badge = $('blueprint-count');
+    if (badge) badge.textContent = String(list.length);
+    return list;
+  } catch {
+    return [];
+  }
+}
+
+function makeMiniButton(label, handler, className = '') {
+  const button = document.createElement('button');
+  button.textContent = label;
+  if (className) button.className = className;
+  button.addEventListener('click', handler);
+  return button;
+}
+
+function renderBlueprintList(items) {
+  const container = $('blueprint-list');
+  container.replaceChildren();
+
+  if (!items.length) {
+    container.append(div('empty', '还没有保存的蓝图。点击上方按钮保存当前蓝图。'));
+    return;
+  }
+
+  for (const item of items) {
+    const card = div('fn-card');
+    const head = div('fn-head');
+    head.append(
+      span('fn-name', item.name),
+      span('var-type', formatBlueprintTime(item.updatedAt))
+    );
+
+    const meta = div('bp-meta');
+    meta.textContent = `${item.nodeCount} 节点 · ${item.functionCount} 函数 · ${item.variableCount} 变量`;
+
+    const ops = div('fn-ops');
+    ops.append(
+      makeMiniButton('加载', () => loadBlueprintById(item.id)),
+      makeMiniButton('覆盖', () => overwriteBlueprint(item)),
+      makeMiniButton('重命名', () => renameBlueprint(item)),
+      makeMiniButton('删除', () => deleteBlueprintById(item), 'danger')
+    );
+
+    card.append(head, meta, ops);
+    container.append(card);
+  }
+}
+
+async function openBlueprints() {
+  const items = await refreshBlueprintBadge();
+  renderBlueprintList(items);
+  openSheet('blueprints');
+}
+
+async function loadBlueprintById(id) {
+  try {
+    const blueprint = await api.getBlueprint(id);
+    currentName = blueprint.name;
+    $('blueprint-name').value = currentName;
+    loadWorkspace(blueprint.graph);
+    closeSheet('blueprints');
+    markDirty();
+    await saveNow();
+    await refreshBlueprintBadge();
+    toast(`已加载蓝图「${blueprint.name}」`);
+  } catch (error) {
+    toast(`加载失败：${error.message}`);
+  }
+}
+
+async function overwriteBlueprint(item) {
+  try {
+    await api.updateBlueprint(item.id, { name: item.name, graph: getWorkspaceGraph() });
+    const items = await refreshBlueprintBadge();
+    renderBlueprintList(items);
+    toast(`已覆盖「${item.name}」`);
+  } catch (error) {
+    toast(`覆盖失败：${error.message}`);
+  }
+}
+
+function renameBlueprint(item) {
+  openPrompt({
+    title: '重命名蓝图',
+    hint: `当前名称：${item.name}`,
+    value: item.name,
+    reopen: openBlueprints,
+    onConfirm: async (name) => {
+      await api.updateBlueprint(item.id, { name });
+      toast('已重命名');
+    },
+  });
+}
+
+function deleteBlueprintById(item) {
+  askConfirm({
+    title: '删除蓝图',
+    message: `删除蓝图「${item.name}」？此操作不可恢复。`,
+    confirmText: '删除',
+    onConfirm: async () => {
+      try {
+        await api.deleteBlueprint(item.id);
+        await refreshBlueprintBadge();
+        await openBlueprints();
+        toast('已删除蓝图');
+      } catch (error) {
+        toast(`删除失败：${error.message}`);
+      }
+    },
+  });
+}
+
+function saveCurrentBlueprint({ reopen = null } = {}) {
+  openPrompt({
+    title: '保存蓝图',
+    hint: '保存当前主图、函数和变量到蓝图库',
+    value: currentName,
+    reopen,
+    onConfirm: async (name) => {
+      await api.createBlueprint({ name, graph: getWorkspaceGraph() });
+      currentName = name;
+      $('blueprint-name').value = name;
+      markDirty();
+      await saveNow();
+      await refreshBlueprintBadge();
+      toast(`蓝图「${name}」已保存`);
+    },
+  });
+}
+
 function updateStats() {
   const graph = editor.graph;
   $('stats').textContent = `${graph.nodes.length} 个节点 · ${graph.connections.length} 条连线 · ${graph.variables.length} 个变量 · ${workspace.functions.length} 个函数`;
@@ -1726,6 +1935,7 @@ function bindUI() {
   $('btn-menu').addEventListener('click', () => {
     updateStats();
     renderExamples();
+    refreshBlueprintBadge();
     $('blueprint-name').value = currentName;
     openSheet('menu');
   });
@@ -1779,6 +1989,21 @@ function bindUI() {
   $('open-functions').addEventListener('click', () => {
     closeSheet('menu');
     openFunctions();
+  });
+  $('save-blueprint').addEventListener('click', () => saveCurrentBlueprint());
+  $('manage-blueprints').addEventListener('click', () => {
+    closeSheet('menu');
+    openBlueprints();
+  });
+  $('save-current-blueprint').addEventListener('click', () =>
+    saveCurrentBlueprint({ reopen: openBlueprints })
+  );
+  $('prompt-ok').addEventListener('click', confirmPrompt);
+  $('prompt-input').addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      confirmPrompt();
+    }
   });
   $('create-function').addEventListener('click', () => {
     closeSheet('functions');

@@ -22,6 +22,17 @@ export const api = {
   saveState: (payload) =>
     request('/api/state', { method: 'POST', body: JSON.stringify(payload) }),
   getExamples: () => request('/api/examples'),
+  listBlueprints: () => request('/api/blueprints'),
+  getBlueprint: (id) => request(`/api/blueprints/${encodeURIComponent(id)}`),
+  createBlueprint: (payload) =>
+    request('/api/blueprints', { method: 'POST', body: JSON.stringify(payload) }),
+  updateBlueprint: (id, payload) =>
+    request(`/api/blueprints/${encodeURIComponent(id)}`, {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    }),
+  deleteBlueprint: (id) =>
+    request(`/api/blueprints/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   getNodeCatalog: () => request('/api/nodes'),
   getAbi: () => request('/api/abi'),
   validateNodeAbi: (node) =>

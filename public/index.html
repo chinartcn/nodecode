@@ -186,6 +186,14 @@
           </div>
 
           <div class="menu-group">
+            <h3>蓝图库</h3>
+            <button class="row-btn" id="save-blueprint">保存当前蓝图</button>
+            <button class="row-btn" id="manage-blueprints">
+              蓝图管理 <span id="blueprint-count" class="badge">0</span>
+            </button>
+          </div>
+
+          <div class="menu-group">
             <h3>工作区</h3>
             <button class="row-btn" id="open-functions">
               函数管理 <span id="function-count" class="badge">0</span>
@@ -277,6 +285,34 @@
           <button class="row-btn" id="signature-add-output">＋ 添加输出</button>
 
           <button class="primary-btn wide" id="signature-save">保存设置</button>
+        </div>
+      </section>
+
+      <!-- 蓝图库 -->
+      <section class="sheet" id="sheet-blueprints" aria-hidden="true">
+        <div class="sheet-head">
+          <div>
+            <h2>蓝图管理</h2>
+            <p class="sub">保存多个蓝图，随时加载或覆盖</p>
+          </div>
+          <button class="text-btn" data-close>关闭</button>
+        </div>
+        <div class="sheet-body">
+          <button class="primary-btn wide" id="save-current-blueprint">保存当前蓝图</button>
+          <div class="node-list" id="blueprint-list" style="margin-top: 12px"></div>
+        </div>
+      </section>
+
+      <!-- 通用名称输入 -->
+      <section class="sheet small" id="sheet-prompt" aria-hidden="true">
+        <div class="sheet-body">
+          <h2 id="prompt-title">保存蓝图</h2>
+          <p class="confirm-text" id="prompt-hint"></p>
+          <input id="prompt-input" type="text" maxlength="60" placeholder="名称" />
+          <div class="confirm-actions">
+            <button class="ghost-btn" data-close>取消</button>
+            <button class="primary-btn" id="prompt-ok">确定</button>
+          </div>
         </div>
       </section>
 

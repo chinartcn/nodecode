@@ -16,6 +16,13 @@ import { runInSandbox } from './sandbox.js';
 import { loadState, saveState } from './storage.js';
 import { examples } from './examples.js';
 import { loadExtensions } from './extensions.js';
+import {
+  createBlueprint,
+  deleteBlueprint,
+  getBlueprint,
+  listBlueprints,
+  updateBlueprint,
+} from './blueprints.js';
 import { normalizeGraph } from '../shared/graph-utils.js';
 import {
   buildAbiDocument,
@@ -146,6 +153,42 @@ async function handleApi(req, res, pathname) {
       examples.map(({ id, name, description, graph }) => ({ id, name, description, graph }))
     );
     return true;
+  }
+
+  if (pathname === '/api/blueprints' && req.method === 'GET') {
+    sendJSON(res, 200, { blueprints: await listBlueprints() });
+    return true;
+  }
+
+  if (pathname === '/api/blueprints' && req.method === 'POST') {
+    const body = await readBody(req);
+    sendJSON(res, 200, await createBlueprint(body));
+    return true;
+  }
+
+  const blueprintMatch = pathname.match(/^\/api\/blueprints\/([^/]+)$/);
+  if (blueprintMatch) {
+    const id = decodeURIComponent(blueprintMatch[1]);
+    try {
+      if (req.method === 'GET') {
+        sendJSON(res, 200, await getBlueprint(id));
+        return true;
+      }
+      if (req.method === 'PUT') {
+        const body = await readBody(req);
+        sendJSON(res, 200, await updateBlueprint(id, body));
+        return true;
+      }
+      if (req.method === 'DELETE') {
+        sendJSON(res, 200, await deleteBlueprint(id));
+        return true;
+      }
+    } catch (error) {
+      sendJSON(res, error.code === 'ENOENT' ? 404 : 400, {
+        error: error.message || '蓝图操作失败',
+      });
+      return true;
+    }
   }
 
   if (pathname === '/api/compile' && req.method === 'POST') {
