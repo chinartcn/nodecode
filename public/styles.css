@@ -303,6 +303,9 @@ button {
 }
 
 .scope-bar button {
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
   padding: 5px 10px;
   border-radius: 999px;
   background: rgba(232, 67, 147, 0.18);

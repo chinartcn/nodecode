@@ -73,6 +73,7 @@ let workspace = {
   functions: [],
 };
 let currentScope = 'main';
+let scopeStack = [{ id: 'main' }];
 let pendingFunctionMode = null;
 let signatureFunctionId = null;
 let signatureDraft = { name: '', inputs: [], outputs: [] };
@@ -178,7 +179,9 @@ const NodeCodeApi = {
     return getWorkspaceGraph();
   },
   getScope: () => currentScope,
+  getScopeStack: () => scopeStack.map((item) => ({ id: item.id, name: scopeName(item.id) })),
   enterScope: (id) => enterScope(id),
+  backScope: () => goBackScope(),
   getFunctions: () =>
     workspace.functions.map((fn) => ({
       id: fn.id,
@@ -419,6 +422,7 @@ function loadWorkspace(rawGraph, options = {}) {
   for (const fn of workspace.functions) syncSignatureNodes(fn);
   pruneAllConnections();
   currentScope = 'main';
+  scopeStack = [{ id: 'main' }];
   editor.setGraph(workspace.main, { recordHistory: false });
   editor.clearHistory();
   closeSheet();
@@ -455,6 +459,12 @@ function getWorkspaceGraph() {
   };
 }
 
+function scopeName(id) {
+  if (id === 'main') return '主图';
+  const fn = workspace.functions.find((item) => item.id === id);
+  return fn ? fn.name : '已删除函数';
+}
+
 function updateScopeBar() {
   const bar = $('scope-bar');
   if (!bar) return;
@@ -464,26 +474,34 @@ function updateScopeBar() {
     if (settingsButton) settingsButton.hidden = true;
     return;
   }
-  const fn = workspace.functions.find((item) => item.id === currentScope);
-  $('scope-name').textContent = fn ? fn.name : '函数';
+  const parent = scopeStack[scopeStack.length - 2];
+  const path = scopeStack.map((item) => scopeName(item.id)).join(' / ');
+  $('scope-back').textContent = parent ? `‹ ${scopeName(parent.id)}` : '‹ 主图';
+  $('scope-name').textContent = path;
+  $('scope-name').title = path;
   bar.hidden = false;
   if (settingsButton) settingsButton.hidden = false;
 }
 
-function enterScope(scopeId) {
-  if (scopeId === currentScope) {
-    closeSheet();
-    return;
-  }
-  syncCurrentScope();
-  const fn = workspace.functions.find((item) => item.id === scopeId);
-  if (scopeId !== 'main' && !fn) return;
+function loadScope(entry, { sync = false, fit = true } = {}) {
+  if (sync) syncCurrentScope();
 
-  currentScope = scopeId;
+  let target = entry;
+  let fn = null;
+  if (target.id !== 'main') {
+    fn = workspace.functions.find((item) => item.id === target.id);
+    if (!fn) {
+      scopeStack = [{ id: 'main' }];
+      target = scopeStack[0];
+    }
+  }
+
+  currentScope = target.id;
   applyFunctionNodeDefs(workspace.functions);
   if (fn) syncSignatureNodes(fn);
-  editor.setGraph(scopeId === 'main' ? workspace.main : fn.graph, {
-    fit: true,
+
+  editor.setGraph(target.id === 'main' ? workspace.main : fn.graph, {
+    fit,
     recordHistory: false,
   });
   editor.clearHistory();
@@ -494,11 +512,48 @@ function enterScope(scopeId) {
   refreshHistoryButtons();
   refreshSelectionBar();
   refreshMultiToolbar();
-  toast(scopeId === 'main' ? '已返回主图' : `进入函数「${fn.name}」`);
   emitSdk('scope', {
-    id: scopeId,
-    name: scopeId === 'main' ? '主图' : fn.name,
+    id: target.id,
+    name: scopeName(target.id),
+    stack: scopeStack.map((item) => ({ id: item.id, name: scopeName(item.id) })),
   });
+}
+
+function enterScope(scopeId) {
+  if (scopeId === currentScope) {
+    closeSheet();
+    return;
+  }
+  syncCurrentScope();
+
+  if (scopeId === 'main') {
+    scopeStack = [{ id: 'main' }];
+    loadScope(scopeStack[0], { fit: true });
+    toast('已返回主图');
+    return;
+  }
+
+  const fn = workspace.functions.find((item) => item.id === scopeId);
+  if (!fn) return;
+
+  const existingIndex = scopeStack.findIndex((item) => item.id === scopeId);
+  if (existingIndex >= 0) {
+    scopeStack = scopeStack.slice(0, existingIndex + 1);
+  } else {
+    scopeStack.push({ id: scopeId });
+  }
+
+  loadScope(scopeStack[scopeStack.length - 1], { fit: true });
+  toast(`进入函数「${fn.name}」`);
+}
+
+function goBackScope() {
+  if (scopeStack.length <= 1) return;
+  syncCurrentScope();
+  scopeStack.pop();
+  const entry = scopeStack[scopeStack.length - 1];
+  loadScope(entry, { fit: true });
+  toast(entry.id === 'main' ? '已返回主图' : `返回「${scopeName(entry.id)}」`);
 }
 
 function getPaletteDefs() {
@@ -640,14 +695,17 @@ function deleteFunction(fnId) {
   for (const item of workspace.functions) cleanScope(item.graph);
 
   applyFunctionNodeDefs(workspace.functions);
-  const wasCurrent = currentScope === fnId;
-  if (wasCurrent) currentScope = 'main';
+  const affectsStack = scopeStack.some((item) => item.id === fnId);
+  if (affectsStack || currentScope === 'main') {
+    scopeStack = [{ id: 'main' }];
+    currentScope = 'main';
+  }
   const target =
     currentScope === 'main'
       ? workspace.main
       : workspace.functions.find((item) => item.id === currentScope)?.graph || workspace.main;
 
-  editor.setGraph(target, { fit: wasCurrent, recordHistory: false });
+  editor.setGraph(target, { fit: affectsStack, recordHistory: false });
   editor.clearHistory();
   markDirty();
   renderFunctions();
@@ -2215,7 +2273,7 @@ function bindUI() {
   $('selection-wrap').addEventListener('click', startWrap);
   $('multi-wrap').addEventListener('click', startWrap);
 
-  $('scope-back').addEventListener('click', () => enterScope('main'));
+  $('scope-back').addEventListener('click', () => goBackScope());
   $('btn-function-settings').addEventListener('click', () => {
     if (currentScope !== 'main') openSignature(currentScope);
   });
