@@ -1380,7 +1380,12 @@ function updateStats() {
 }
 
 function exportGraph() {
-  const payload = { name: currentName, graph: getWorkspaceGraph() };
+  const payload = {
+    version: 1,
+    name: currentName,
+    exportedAt: new Date().toISOString(),
+    graph: getWorkspaceGraph(),
+  };
   const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
   const url = URL.createObjectURL(blob);
   const link = document.createElement('a');
@@ -1389,6 +1394,30 @@ function exportGraph() {
   link.click();
   URL.revokeObjectURL(url);
   toast('已导出 JSON');
+}
+
+async function importGraphFile(file) {
+  const text = await file.text();
+  const data = JSON.parse(text);
+  const graph =
+    data && typeof data === 'object' && data.graph && typeof data.graph === 'object'
+      ? data.graph
+      : data;
+
+  if (!graph || !Array.isArray(graph.nodes) || !Array.isArray(graph.connections)) {
+    throw new Error('文件内容不是有效的蓝图 JSON');
+  }
+
+  currentName =
+    (typeof data.name === 'string' && data.name.trim()) ||
+    file.name.replace(/\.json$/i, '') ||
+    '导入的蓝图';
+  $('blueprint-name').value = currentName;
+  loadWorkspace(graph);
+  closeSheet('menu');
+  markDirty();
+  await saveNow();
+  toast(`已导入 ${file.name}`);
 }
 
 /* ---------------- 代码 / 运行 ---------------- */
@@ -1657,6 +1686,19 @@ function bindUI() {
   });
 
   $('export-json').addEventListener('click', exportGraph);
+
+  $('import-json').addEventListener('click', () => $('import-json-file').click());
+
+  $('import-json-file').addEventListener('change', async (event) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file) return;
+    try {
+      await importGraphFile(file);
+    } catch (error) {
+      toast(`导入失败：${error.message}`);
+    }
+  });
 
   $('clear-graph').addEventListener('click', () => {
     askConfirm({

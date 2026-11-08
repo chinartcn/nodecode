@@ -193,6 +193,7 @@
             <button class="row-btn" id="open-variables">
               变量管理 <span id="variable-count" class="badge">0</span>
             </button>
+            <button class="row-btn" id="import-json">导入 JSON</button>
             <button class="row-btn" id="export-json">导出 JSON</button>
             <button class="row-btn danger" id="clear-graph">清空画布</button>
           </div>
@@ -305,6 +306,7 @@
       </section>
 
       <div class="toast" id="toast" hidden></div>
+      <input id="import-json-file" type="file" accept=".json,application/json" hidden />
     </div>
 
     <script type="module" src="/js/app.js"></script>
