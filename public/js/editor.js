@@ -58,6 +58,8 @@ export class BlueprintEditor {
     this.pointerWorld = null;
     this.dirty = true;
     this._addCount = 0;
+    // 底部被悬浮面板遮挡的高度，用于把新节点放在可见区域中央
+    this.bottomInset = 0;
     this._raf = null;
 
     // 性能相关缓存
@@ -120,10 +122,18 @@ export class BlueprintEditor {
     this.options.onStructure?.();
   }
 
+  setBottomInset(px) {
+    this.bottomInset = Math.max(0, Number(px) || 0);
+  }
+
   addNode(name, extraData = {}) {
     const def = getNodeDef(name);
     if (!def) return null;
-    const center = this.screenToWorld(this.size.w / 2, this.size.h / 2);
+    const layout = getNodeLayout({ name });
+    const height = layout ? layout.height : 120;
+    // 在未被底部悬浮面板遮挡的区域中央添加节点
+    const usableHeight = Math.max(160, this.size.h - this.bottomInset);
+    const center = this.screenToWorld(this.size.w / 2, usableHeight / 2);
     const offset = (this._addCount % 6) * 26;
     this._addCount += 1;
     const node = {
@@ -131,7 +141,7 @@ export class BlueprintEditor {
       name,
       position: {
         x: Math.round(center.x - def.width / 2 + offset),
-        y: Math.round(center.y - 60 + offset),
+        y: Math.round(center.y - height / 2 + offset),
       },
       data: { ...(def.defaults || {}), ...extraData },
     };

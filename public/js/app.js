@@ -74,11 +74,14 @@ function openSheet(name) {
   if (openSheetName && openSheetName !== name) closeSheet(openSheetName, true);
   const sheet = $(`sheet-${name}`);
   if (!sheet) return;
+  const floating = name === 'palette';
   sheet.classList.add('open');
   sheet.setAttribute('aria-hidden', 'false');
-  $('scrim').classList.add('show');
+  if (floating) $('scrim').classList.remove('show');
+  else $('scrim').classList.add('show');
   $('selection-bar').hidden = true;
   openSheetName = name;
+  if (floating) updatePaletteInset();
 }
 
 function closeSheet(name = openSheetName, keepScrim = false) {
@@ -88,7 +91,18 @@ function closeSheet(name = openSheetName, keepScrim = false) {
   sheet?.setAttribute('aria-hidden', 'true');
   if (name === openSheetName) openSheetName = null;
   if (!keepScrim) $('scrim').classList.remove('show');
+  if (name === 'palette') editor.setBottomInset(0);
   refreshSelectionBar();
+}
+
+/** 让新节点添加到悬浮面板上方的可见区域 */
+function updatePaletteInset() {
+  if (openSheetName !== 'palette') {
+    editor.setBottomInset(0);
+    return;
+  }
+  const rect = $('sheet-palette').getBoundingClientRect();
+  editor.setBottomInset(rect.height + 20);
 }
 
 function refreshSelectionBar() {
@@ -310,8 +324,8 @@ function renderPalette() {
     item.append(dot, meta, plus);
     item.addEventListener('click', () => {
       const node = editor.addNode(def.name);
-      closeSheet('palette');
-      if (node) openInspector(node.id);
+      // 保持面板打开，方便连续添加多个节点
+      if (node) toast(`已添加 ${def.label}`);
     });
     container.append(item);
   }
@@ -948,6 +962,7 @@ function bindUI() {
   $('save-now').addEventListener('click', () => saveNow({ manual: true }));
 
   window.addEventListener('pagehide', handlePageHidden);
+  window.addEventListener('resize', updatePaletteInset);
 
   $('open-variables').addEventListener('click', () => {
     closeSheet('menu');

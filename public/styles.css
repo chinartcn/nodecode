@@ -461,6 +461,32 @@ button {
   max-height: 60dvh;
 }
 
+/* 节点面板：悬浮在下半屏，不遮挡整页，也不自动关闭 */
+#sheet-palette {
+  left: 12px;
+  right: 12px;
+  bottom: calc(12px + var(--safe-bottom));
+  height: clamp(240px, 45dvh, 440px);
+  max-height: none;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 18px;
+  overflow: hidden;
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.55);
+  transform: translateY(calc(100% + 24px));
+}
+
+#sheet-palette::before {
+  display: none;
+}
+
+#sheet-palette.open {
+  transform: translateY(0);
+}
+
+#sheet-palette .sheet-body {
+  padding-bottom: 14px;
+}
+
 .sheet.small .sheet-body {
   padding-top: 6px;
 }
@@ -1089,6 +1115,19 @@ select {
 
   .sheet.small {
     width: 400px;
+  }
+
+  #sheet-palette {
+    left: auto;
+    right: 24px;
+    bottom: 24px;
+    width: 380px;
+    height: clamp(260px, 46dvh, 440px);
+    transform: translateY(calc(100% + 24px));
+  }
+
+  #sheet-palette.open {
+    transform: translateY(0);
   }
 
   .fab {
