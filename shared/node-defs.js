@@ -165,7 +165,7 @@ export const nodeDefs = [
     ],
     code: ({ input, execOut: branch, buildPinVarName }) => {
       const inc = buildPinVarName('inc');
-      return `for (let ${inc} = 0; ${inc} < ${input('times')}; ${inc}++) {\n${block(branch('body'), 2)}\n}\n`;
+      return `for (var ${inc} = 0; ${inc} < ${input('times')}; ${inc}++) {\n${block(branch('body'), 2)}\n}\n`;
     },
   },
   {
@@ -185,7 +185,7 @@ export const nodeDefs = [
     ],
     code: ({ input, execOut: branch, buildPinVarName }) => {
       const item = buildPinVarName('item');
-      return `for (const ${item} of (${input('array')} ?? [])) {\n${block(branch('iteration'), 2)}\n}\n`;
+      return `for (var ${item} of (${input('array')} ?? [])) {\n${block(branch('iteration'), 2)}\n}\n`;
     },
   },
   {
@@ -235,8 +235,8 @@ export const nodeDefs = [
       const hasHeaders = isConnected('headers') || Boolean(raw('headers'));
       const body = hasData ? input('data') : 'undefined';
       const headers = hasHeaders ? input('headers') : 'undefined';
-      return `let ${text} = '';
-let ${json} = {};
+      return `var ${text} = '';
+var ${json} = {};
 try {
   const __res = await fetch(${input('url')}, {
     method: ${input('method')},
@@ -272,7 +272,7 @@ ${block(branch('onFailed'), 2)}
     code: ({ input, raw, buildPinVarName }) => {
       const returnValue = buildPinVarName('returnValue');
       const js = indent(String(raw('js') || 'return ctx;'), 2);
-      return `const ${returnValue} = (function(ctx) {\n  ${js}\n})(${input('ctx')});\n`;
+      return `var ${returnValue} = (function(ctx) {\n  ${js}\n})(${input('ctx')});\n`;
     },
   },
 

@@ -227,9 +227,9 @@ export class Compiler {
     }
 
     const resultVar = this.buildPinVarName('result', node.id);
-    let code = `const ${resultVar} = await ${jsName}(${args.join(', ')});\n`;
+    let code = `var ${resultVar} = await ${jsName}(${args.join(', ')});\n`;
     for (const entry of fn.outputs) {
-      code += `const ${this.buildPinVarName(`o_${entry.id}`, node.id)} = ${resultVar} == null ? undefined : ${resultVar}[${JSON.stringify(entry.id)}];\n`;
+      code += `var ${this.buildPinVarName(`o_${entry.id}`, node.id)} = ${resultVar} == null ? undefined : ${resultVar}[${JSON.stringify(entry.id)}];\n`;
     }
     return code;
   }
