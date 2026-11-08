@@ -47,6 +47,7 @@
           <button id="btn-undo" aria-label="撤销" title="撤销">↶</button>
           <button id="btn-redo" aria-label="重做" title="重做">↷</button>
           <button id="btn-marquee" aria-label="框选模式" title="框选模式">▭</button>
+          <button id="btn-function-settings" aria-label="当前函数设置" title="当前函数设置" hidden>⚙</button>
         </div>
 
         <div class="scope-bar" id="scope-bar" hidden>
@@ -113,7 +114,10 @@
             <h2 id="inspector-title">节点</h2>
             <p class="sub" id="inspector-sub"></p>
           </div>
-          <button class="text-btn" data-close>关闭</button>
+          <div class="head-actions">
+            <button class="text-btn" id="inspector-fullscreen">全屏</button>
+            <button class="text-btn" data-close>关闭</button>
+          </div>
         </div>
         <div class="sheet-body" id="inspector-body"></div>
       </section>

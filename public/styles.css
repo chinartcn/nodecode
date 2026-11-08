@@ -277,6 +277,10 @@ button {
   opacity: 0.3;
 }
 
+.canvas-tools button[hidden] {
+  display: none;
+}
+
 .scope-bar {
   position: absolute;
   top: 10px;
@@ -424,6 +428,51 @@ button {
   margin: -2px 0 10px;
   font-size: 11.5px;
   color: var(--muted);
+}
+
+.fn-quick {
+  margin: 0 0 14px;
+  padding: 10px 12px;
+  background: rgba(232, 67, 147, 0.08);
+  border: 1px solid rgba(232, 67, 147, 0.3);
+  border-radius: 12px;
+}
+
+.fn-quick-info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.fn-quick-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+#sheet-inspector.fullscreen {
+  left: 0;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  width: auto;
+  height: 100dvh;
+  max-height: 100dvh;
+  border-radius: 0;
+  transform: translateY(0);
+}
+
+#sheet-inspector.fullscreen .sheet-head {
+  padding-top: calc(10px + var(--safe-top));
+}
+
+#sheet-inspector.fullscreen .sheet-body {
+  padding-bottom: calc(20px + var(--safe-bottom));
 }
 
 .group-title {

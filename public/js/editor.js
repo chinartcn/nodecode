@@ -837,6 +837,8 @@ export class BlueprintEditor {
           this._recordHistory(this._dragSnapshot, `move:${drag.nodeId}`);
         }
         this.notifyChange();
+      } else {
+        this.options.onNodeTap?.(this.getNode(drag.nodeId));
       }
       this._dragSnapshot = null;
     } else if (drag.mode === 'connection') {

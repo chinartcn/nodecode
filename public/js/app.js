@@ -40,6 +40,7 @@ const editor = new BlueprintEditor(canvas, {
     emitSdk('structure', { scope: currentScope });
   },
   onConnectionTap: (connectionId) => askDeleteConnection(connectionId),
+  onNodeTap: handleNodeTap,
   onHint: handleHint,
   onHidden: handlePageHidden,
   onHistory: refreshHistoryButtons,
@@ -306,6 +307,11 @@ function closeSheet(name = openSheetName, keepScrim = false) {
   if (name === openSheetName) openSheetName = null;
   if (!keepScrim) $('scrim').classList.remove('show');
   if (name === 'palette') editor.setBottomInset(0);
+  if (name === 'inspector') {
+    sheet?.classList.remove('fullscreen');
+    const fullscreenButton = $('inspector-fullscreen');
+    if (fullscreenButton) fullscreenButton.textContent = '全屏';
+  }
   refreshSelectionBar();
   refreshMultiToolbar();
 }
@@ -348,6 +354,11 @@ function applyPaletteLayout() {
 function handleSelectionChange() {
   refreshSelectionBar();
   refreshMultiToolbar();
+}
+
+function handleNodeTap(node) {
+  if (!node || editor.selectionMode) return;
+  openInspector(node.id);
 }
 
 function handleSelectionModeChange(enabled) {
@@ -433,13 +444,16 @@ function getWorkspaceGraph() {
 function updateScopeBar() {
   const bar = $('scope-bar');
   if (!bar) return;
+  const settingsButton = $('btn-function-settings');
   if (currentScope === 'main') {
     bar.hidden = true;
+    if (settingsButton) settingsButton.hidden = true;
     return;
   }
   const fn = workspace.functions.find((item) => item.id === currentScope);
   $('scope-name').textContent = fn ? fn.name : '函数';
   bar.hidden = false;
+  if (settingsButton) settingsButton.hidden = false;
 }
 
 function enterScope(scopeId) {
@@ -1216,6 +1230,10 @@ function renderInspector() {
   typeRow.append(dot, label, idEl);
   body.append(typeRow);
 
+  if (node.name.startsWith('fncall:')) {
+    body.append(buildFunctionCallActions(node));
+  }
+
   if (node.name === 'varget' || node.name === 'varset') {
     body.append(buildVariablePicker(node));
   }
@@ -1248,6 +1266,38 @@ function renderInspector() {
     actions.append(remove);
   }
   body.append(actions);
+}
+
+function buildFunctionCallActions(node) {
+  const fnId = node.name.slice('fncall:'.length);
+  const fn = workspace.functions.find((item) => item.id === fnId);
+
+  const wrap = div('fn-quick');
+  const info = div('fn-quick-info');
+  info.append(
+    span('fn-quick-name', fn ? fn.name : '函数不存在'),
+    span(
+      'var-type',
+      fn ? `入 ${(fn.inputs || []).length} · 出 ${(fn.outputs || []).length}` : ''
+    )
+  );
+
+  const ops = div('fn-ops');
+  const enter = makeMiniButton('进入函数', () => {
+    if (fn) enterScope(fn.id);
+  });
+  const settings = makeMiniButton('函数设置', () => {
+    if (fn) {
+      closeSheet('inspector');
+      openSignature(fn.id);
+    }
+  });
+  enter.disabled = !fn;
+  settings.disabled = !fn;
+  ops.append(enter, settings);
+
+  wrap.append(info, ops);
+  return wrap;
 }
 
 function buildConnectedRow(pin) {
@@ -1997,6 +2047,15 @@ function bindUI() {
   $('multi-wrap').addEventListener('click', startWrap);
 
   $('scope-back').addEventListener('click', () => enterScope('main'));
+  $('btn-function-settings').addEventListener('click', () => {
+    if (currentScope !== 'main') openSignature(currentScope);
+  });
+  $('inspector-fullscreen').addEventListener('click', () => {
+    const sheet = $('sheet-inspector');
+    const next = !sheet.classList.contains('fullscreen');
+    sheet.classList.toggle('fullscreen', next);
+    $('inspector-fullscreen').textContent = next ? '退出全屏' : '全屏';
+  });
   $('open-functions').addEventListener('click', () => {
     closeSheet('menu');
     openFunctions();
