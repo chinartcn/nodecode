@@ -13,13 +13,36 @@ import {
   serializeNodeDefs,
   validateExternalNodeDefinition,
 } from '/shared/abi.js';
-import { generateId, getNodeLayout, getPinLayout, normalizeGraph } from '/shared/graph-utils.js';
 import {
-  applyFunctionNodeDefs,
+  clearLayoutCache,
+  generateId,
+  getNodeLayout,
+  getPinLayout,
+  normalizeGraph,
+} from '/shared/graph-utils.js';
+import {
   functionArgDefName,
   functionCallDefName,
   functionRetDefName,
 } from '/shared/function-defs.js';
+import {
+  PROPERTY_TYPES,
+  classArgDefName,
+  classCallDefName,
+  classGetDefName,
+  classNewDefName,
+  classRetDefName,
+  classSelfGetDefName,
+  classSelfSetDefName,
+  classSetDefName,
+  defaultPropertyValue,
+  isMethodScopeId,
+  listClassPaletteNodeNames,
+  listClassSelfNodeNames,
+  methodScopeId,
+  parseMethodScopeId,
+} from '/shared/class-defs.js';
+import { applyDynamicNodeDefs } from '/shared/dynamic-defs.js';
 import { wrapSelectionAsFunction } from '/shared/function-wrap.js';
 import { mergeModuleGraph } from '/shared/module-utils.js';
 import { BlueprintEditor } from './editor.js';
@@ -68,16 +91,19 @@ let paletteState = { category: 'all', query: '' };
 let paletteCompact = readFlag(PALETTE_COMPACT_KEY);
 let paletteTwoCols = readFlag(PALETTE_COLUMNS_KEY);
 
-// 工作区：主图 + 用户函数（子图）
+// 工作区：主图 + 用户函数（子图）+ 用户类
 let workspace = {
   main: { nodes: [], connections: [], variables: [] },
   functions: [],
+  classes: [],
 };
 let currentScope = 'main';
 let scopeStack = [{ id: 'main' }];
 let pendingFunctionMode = null;
-let signatureFunctionId = null;
+let signatureTarget = null;
 let signatureDraft = { name: '', inputs: [], outputs: [] };
+let classSettingsId = null;
+let classDraft = { name: '', properties: [] };
 let externalNodeDefs = [];
 let nodeCatalog = [];
 let nodeCardNodeId = null;
@@ -189,6 +215,18 @@ const NodeCodeApi = {
       name: fn.name,
       inputs: fn.inputs,
       outputs: fn.outputs,
+    })),
+  getClasses: () =>
+    workspace.classes.map((cls) => ({
+      id: cls.id,
+      name: cls.name,
+      properties: cls.properties,
+      methods: (cls.methods || []).map((method) => ({
+        id: method.id,
+        name: method.name,
+        inputs: method.inputs,
+        outputs: method.outputs,
+      })),
     })),
   getNodeDefs: () => getPaletteDefs(),
   getAbi: () => api.getAbi(),
@@ -408,7 +446,29 @@ function refreshMultiToolbar() {
   $('multi-paste').disabled = !editor.hasClipboard();
 }
 
-/* ---------------- 工作区 / 函数（子图） ---------------- */
+/* ---------------- 工作区 / 函数 / 类 ---------------- */
+
+function applyDynamicDefs() {
+  clearLayoutCache();
+  applyDynamicNodeDefs(workspace.functions, workspace.classes);
+}
+
+function findMethodScope(scopeId) {
+  const parsed = parseMethodScopeId(scopeId);
+  if (!parsed) return null;
+  const cls = workspace.classes.find((item) => item.id === parsed.classId);
+  if (!cls) return null;
+  const method = (cls.methods || []).find((item) => item.id === parsed.methodId);
+  return method ? { cls, method } : null;
+}
+
+function getScopeGraph(scopeId) {
+  if (scopeId === 'main') return workspace.main;
+  const fn = workspace.functions.find((item) => item.id === scopeId);
+  if (fn) return fn.graph;
+  const found = findMethodScope(scopeId);
+  return found ? found.method.graph : null;
+}
 
 function loadWorkspace(rawGraph, options = {}) {
   const normalized = normalizeGraph(rawGraph);
@@ -419,9 +479,13 @@ function loadWorkspace(rawGraph, options = {}) {
       variables: normalized.variables,
     },
     functions: normalized.functions || [],
+    classes: normalized.classes || [],
   };
-  applyFunctionNodeDefs(workspace.functions);
+  applyDynamicDefs();
   for (const fn of workspace.functions) syncSignatureNodes(fn);
+  for (const cls of workspace.classes) {
+    for (const method of cls.methods || []) syncMethodSignatureNodes(cls, method);
+  }
   pruneAllConnections();
   currentScope = 'main';
   scopeStack = [{ id: 'main' }];
@@ -445,7 +509,12 @@ function syncCurrentScope() {
     return;
   }
   const fn = workspace.functions.find((item) => item.id === currentScope);
-  if (fn) fn.graph = snapshot;
+  if (fn) {
+    fn.graph = snapshot;
+    return;
+  }
+  const found = findMethodScope(currentScope);
+  if (found) found.method.graph = snapshot;
 }
 
 function getWorkspaceGraph() {
@@ -458,13 +527,25 @@ function getWorkspaceGraph() {
   return {
     ...scope(workspace.main),
     functions: workspace.functions.map((fn) => ({ ...fn, graph: scope(fn.graph) })),
+    classes: workspace.classes.map((cls) => ({
+      ...cls,
+      properties: cls.properties.map((property) => ({ ...property })),
+      methods: (cls.methods || []).map((method) => ({
+        ...method,
+        inputs: method.inputs,
+        outputs: method.outputs,
+        graph: scope(method.graph),
+      })),
+    })),
   };
 }
 
 function scopeName(id) {
   if (id === 'main') return '主图';
   const fn = workspace.functions.find((item) => item.id === id);
-  return fn ? fn.name : '已删除函数';
+  if (fn) return fn.name;
+  const found = findMethodScope(id);
+  return found ? `${found.cls.name}.${found.method.name}` : '已删除作用域';
 }
 
 function updateScopeBar() {
@@ -490,19 +571,29 @@ function loadScope(entry, { sync = false, fit = true } = {}) {
 
   let target = entry;
   let fn = null;
+  let methodScope = null;
   if (target.id !== 'main') {
-    fn = workspace.functions.find((item) => item.id === target.id);
-    if (!fn) {
+    fn = workspace.functions.find((item) => item.id === target.id) || null;
+    if (!fn) methodScope = findMethodScope(target.id);
+    if (!fn && !methodScope) {
       scopeStack = [{ id: 'main' }];
       target = scopeStack[0];
     }
   }
 
   currentScope = target.id;
-  applyFunctionNodeDefs(workspace.functions);
+  applyDynamicDefs();
   if (fn) syncSignatureNodes(fn);
+  if (methodScope) syncMethodSignatureNodes(methodScope.cls, methodScope.method);
 
-  editor.setGraph(target.id === 'main' ? workspace.main : fn.graph, {
+  const graph =
+    target.id === 'main'
+      ? workspace.main
+      : fn
+        ? fn.graph
+        : methodScope.method.graph;
+
+  editor.setGraph(graph, {
     fit,
     recordHistory: false,
   });
@@ -536,7 +627,8 @@ function enterScope(scopeId) {
   }
 
   const fn = workspace.functions.find((item) => item.id === scopeId);
-  if (!fn) return;
+  const methodScope = fn ? null : findMethodScope(scopeId);
+  if (!fn && !methodScope) return;
 
   const existingIndex = scopeStack.findIndex((item) => item.id === scopeId);
   if (existingIndex >= 0) {
@@ -546,7 +638,11 @@ function enterScope(scopeId) {
   }
 
   loadScope(scopeStack[scopeStack.length - 1], { fit: true });
-  toast(`进入函数「${fn.name}」`);
+  toast(
+    fn
+      ? `进入函数「${fn.name}」`
+      : `进入方法「${methodScope.cls.name}.${methodScope.method.name}」`
+  );
 }
 
 function goBackScope() {
@@ -563,27 +659,46 @@ function getPaletteDefs() {
     ...getVisibleNodeDefs(),
     ...externalNodeDefs.filter((def) => !def.hidden),
   ];
-  // 函数子图内不能再添加触发节点
+  // 函数/方法子图内不能再添加触发节点
   const defs = currentScope === 'main' ? allDefs : allDefs.filter((def) => def.type !== 'begin');
+  const seen = new Set(defs.map((def) => def.name));
+  const pushDef = (name) => {
+    if (!name || seen.has(name)) return;
+    const def = getNodeDef(name);
+    if (!def) return;
+    seen.add(name);
+    defs.push(def);
+  };
 
   if (currentScope !== 'main') {
     const fn = workspace.functions.find((item) => item.id === currentScope);
     if (fn) {
       for (const entry of fn.inputs || []) {
-        const def = getNodeDef(functionArgDefName(fn.id, entry.id));
-        if (def) defs.push(def);
+        pushDef(functionArgDefName(fn.id, entry.id));
       }
       for (const entry of fn.outputs || []) {
-        const def = getNodeDef(functionRetDefName(fn.id, entry.id));
-        if (def) defs.push(def);
+        pushDef(functionRetDefName(fn.id, entry.id));
       }
     }
   }
 
   for (const fn of workspace.functions) {
     if (fn.id === currentScope) continue;
-    const def = getNodeDef(functionCallDefName(fn.id));
-    if (def) defs.push(def);
+    pushDef(functionCallDefName(fn.id));
+  }
+
+  // 类的外部节点：实例化、属性读写、方法调用
+  for (const cls of workspace.classes) {
+    for (const name of listClassPaletteNodeNames(cls)) pushDef(name);
+  }
+
+  // 方法内部可用的 this 属性节点
+  const methodScope = parseMethodScopeId(currentScope);
+  if (methodScope) {
+    const cls = workspace.classes.find((item) => item.id === methodScope.classId);
+    if (cls) {
+      for (const name of listClassSelfNodeNames(cls)) pushDef(name);
+    }
   }
 
   return defs;
@@ -652,7 +767,7 @@ function addFunctionCall(fnId) {
     toast('不能调用当前函数本身');
     return;
   }
-  applyFunctionNodeDefs(workspace.functions);
+  applyDynamicDefs();
   const node = editor.addNode(functionCallDefName(fnId));
   closeSheet('functions');
   if (node) {
@@ -670,7 +785,7 @@ function createEmptyFunction(name) {
     graph: { nodes: [], connections: [], variables: [] },
   };
   workspace.functions.push(fn);
-  applyFunctionNodeDefs(workspace.functions);
+  applyDynamicDefs();
   markDirty();
   renderFunctions();
   renderPalette();
@@ -697,17 +812,17 @@ function deleteFunction(fnId) {
   };
   cleanScope(workspace.main);
   for (const item of workspace.functions) cleanScope(item.graph);
+  for (const cls of workspace.classes) {
+    for (const method of cls.methods || []) cleanScope(method.graph);
+  }
 
-  applyFunctionNodeDefs(workspace.functions);
+  applyDynamicDefs();
   const affectsStack = scopeStack.some((item) => item.id === fnId);
   if (affectsStack || currentScope === 'main') {
     scopeStack = [{ id: 'main' }];
     currentScope = 'main';
   }
-  const target =
-    currentScope === 'main'
-      ? workspace.main
-      : workspace.functions.find((item) => item.id === currentScope)?.graph || workspace.main;
+  const target = getScopeGraph(currentScope) || workspace.main;
 
   editor.setGraph(target, { fit: affectsStack, recordHistory: false });
   editor.clearHistory();
@@ -720,7 +835,434 @@ function deleteFunction(fnId) {
   toast(`已删除函数「${fn.name}」`);
 }
 
-/* ---------------- 封装 / 函数名称 ---------------- */
+/* ---------------- 类管理 ---------------- */
+
+function removeNodesEverywhere(predicate) {
+  const clean = (scope) => {
+    if (!scope) return;
+    const removed = new Set(
+      (scope.nodes || []).filter((node) => predicate(node)).map((node) => node.id)
+    );
+    if (!removed.size) return;
+    scope.nodes = scope.nodes.filter((node) => !removed.has(node.id));
+    scope.connections = (scope.connections || []).filter(
+      (conn) => !removed.has(conn.fromNodeId) && !removed.has(conn.toNodeId)
+    );
+  };
+  clean(workspace.main);
+  for (const fn of workspace.functions) clean(fn.graph);
+  for (const cls of workspace.classes) {
+    for (const method of cls.methods || []) clean(method.graph);
+  }
+}
+
+function classPrefixPredicate(classId, extra) {
+  const prefixes = [
+    `clsget:${classId}:`,
+    `clsset:${classId}:`,
+    `clscall:${classId}:`,
+    `clsselfget:${classId}:`,
+    `clsselfset:${classId}:`,
+    `clsarg:${classId}:`,
+    `clsret:${classId}:`,
+  ];
+  return (node) =>
+    node.name === `clsnew:${classId}` ||
+    (extra ? extra(node) : false) ||
+    prefixes.some((prefix) => node.name.startsWith(prefix));
+}
+
+function openClasses() {
+  renderClasses();
+  openSheet('classes');
+}
+
+function renderClasses() {
+  const container = $('class-list');
+  const badge = $('class-count');
+  if (badge) badge.textContent = String(workspace.classes.length);
+  if (!container) return;
+  container.replaceChildren();
+
+  if (!workspace.classes.length) {
+    container.append(
+      div('empty', '还没有类。创建一个类后，可以添加属性与方法，并在画布中实例化。')
+    );
+    return;
+  }
+
+  for (const cls of workspace.classes) {
+    const card = div('fn-card');
+    const head = div('fn-head');
+    head.append(
+      span('fn-name', cls.name),
+      span('var-type', `属性 ${(cls.properties || []).length} · 方法 ${(cls.methods || []).length}`)
+    );
+
+    const meta = div(
+      'bp-meta',
+      (cls.properties || []).length
+        ? (cls.properties || []).map((property) => property.name).join(' · ')
+        : '暂无属性'
+    );
+
+    const ops = div('fn-ops');
+    ops.append(
+      makeMiniButton('设置', () => openClassSettings(cls.id)),
+      makeMiniButton('加方法', () => promptAddMethod(cls.id)),
+      makeMiniButton('删除', () => deleteClass(cls.id), 'danger')
+    );
+
+    const methodList = div('node-list');
+    if (!(cls.methods || []).length) {
+      methodList.append(div('empty', '暂无方法。点击「加方法」创建。'));
+    }
+    for (const method of cls.methods || []) {
+      const row = div('fn-card');
+      const methodHead = div('fn-head');
+      const current = currentScope === methodScopeId(cls.id, method.id);
+      methodHead.append(
+        span('fn-name', current ? `${method.name}（当前）` : method.name),
+        span(
+          'var-type',
+          `入 ${(method.inputs || []).length} · 出 ${(method.outputs || []).length}`
+        )
+      );
+      const methodOps = div('fn-ops');
+      methodOps.append(
+        makeMiniButton('进入', () => enterScope(methodScopeId(cls.id, method.id))),
+        makeMiniButton('设置', () => openMethodSignature(cls.id, method.id)),
+        makeMiniButton('删除', () => deleteMethod(cls.id, method.id), 'danger')
+      );
+      row.append(methodHead, methodOps);
+      methodList.append(row);
+    }
+
+    card.append(head, meta, ops, methodList);
+    container.append(card);
+  }
+}
+
+function createClass(name) {
+  if (workspace.classes.some((cls) => cls.name === name)) {
+    toast('类名已存在');
+    return;
+  }
+  workspace.classes.push({
+    id: generateId('cls'),
+    name,
+    properties: [],
+    methods: [],
+  });
+  applyDynamicDefs();
+  markDirty();
+  renderClasses();
+  renderPalette();
+  updateStats();
+  toast(`已创建类「${name}」`);
+}
+
+function promptAddMethod(classId) {
+  const cls = workspace.classes.find((item) => item.id === classId);
+  if (!cls) return;
+  openPrompt({
+    title: '添加方法',
+    hint: `类「${cls.name}」的新方法`,
+    value: '',
+    reopen: null,
+    onConfirm: (name) => addMethod(cls, name),
+  });
+}
+
+function addMethod(cls, name) {
+  if (!cls) return;
+  if (name === 'constructor') {
+    toast('方法名不能是 constructor');
+    return;
+  }
+  if ((cls.methods || []).some((method) => method.name === name)) {
+    toast('方法名已存在');
+    return;
+  }
+  const method = {
+    id: generateId('m'),
+    name,
+    inputs: [],
+    outputs: [],
+    graph: { nodes: [], connections: [], variables: [] },
+  };
+  cls.methods = cls.methods || [];
+  cls.methods.push(method);
+  applyDynamicDefs();
+  syncMethodSignatureNodes(cls, method);
+  markDirty();
+  renderClasses();
+  renderPalette();
+  updateStats();
+  toast(`已添加方法「${cls.name}.${name}」`);
+  enterScope(methodScopeId(cls.id, method.id));
+}
+
+function deleteMethod(classId, methodId) {
+  const cls = workspace.classes.find((item) => item.id === classId);
+  const method = cls?.methods?.find((item) => item.id === methodId);
+  if (!cls || !method) return;
+  syncCurrentScope();
+
+  cls.methods = cls.methods.filter((item) => item.id !== methodId);
+  const exactName = `clscall:${classId}:${methodId}`;
+  removeNodesEverywhere(
+    (node) =>
+      node.name === exactName ||
+      node.name.startsWith(`clsarg:${classId}:${methodId}:`) ||
+      node.name.startsWith(`clsret:${classId}:${methodId}:`)
+  );
+
+  applyDynamicDefs();
+  if (currentScope === methodScopeId(classId, methodId)) {
+    scopeStack = [{ id: 'main' }];
+    currentScope = 'main';
+  }
+  const target = getScopeGraph(currentScope) || workspace.main;
+  editor.setGraph(target, { fit: false, recordHistory: false });
+  editor.clearHistory();
+  markDirty();
+  renderClasses();
+  renderPalette();
+  updateScopeBar();
+  updateStats();
+  refreshHistoryButtons();
+  toast(`已删除方法「${cls.name}.${method.name}」`);
+}
+
+function deleteClass(classId) {
+  const cls = workspace.classes.find((item) => item.id === classId);
+  if (!cls) return;
+  syncCurrentScope();
+
+  workspace.classes = workspace.classes.filter((item) => item.id !== classId);
+  removeNodesEverywhere(classPrefixPredicate(classId));
+
+  applyDynamicDefs();
+  const affectsScope = scopeStack.some((item) => {
+    const parsed = parseMethodScopeId(item.id);
+    return parsed && parsed.classId === classId;
+  });
+  if (affectsScope) {
+    scopeStack = [{ id: 'main' }];
+    currentScope = 'main';
+  }
+  const target = getScopeGraph(currentScope) || workspace.main;
+  editor.setGraph(target, { fit: affectsScope, recordHistory: false });
+  editor.clearHistory();
+  markDirty();
+  renderClasses();
+  renderPalette();
+  updateScopeBar();
+  updateStats();
+  refreshHistoryButtons();
+  toast(`已删除类「${cls.name}」`);
+}
+
+function openClassSettings(classId) {
+  const cls = workspace.classes.find((item) => item.id === classId);
+  if (!cls) return;
+  classSettingsId = classId;
+  classDraft = {
+    name: cls.name,
+    properties: (cls.properties || []).map((property) => ({ ...property })),
+  };
+  $('class-settings-name').value = cls.name;
+  $('class-settings-sub').textContent = `属性 ${classDraft.properties.length} · 方法 ${(cls.methods || []).length}`;
+  renderClassProperties();
+  openSheet('class-settings');
+}
+
+function renderClassProperties() {
+  const container = $('class-properties');
+  if (!container) return;
+  container.replaceChildren();
+
+  if (!classDraft.properties.length) {
+    container.append(div('empty', '暂无属性。添加后可在方法内用 this.属性名 读写。'));
+    return;
+  }
+
+  for (const property of classDraft.properties) {
+    const row = div('sig-row class-prop-row');
+
+    const nameInput = document.createElement('input');
+    nameInput.type = 'text';
+    nameInput.value = property.name;
+    nameInput.placeholder = '属性名';
+    nameInput.addEventListener('input', () => {
+      property.name = nameInput.value;
+    });
+
+    const typeSelect = document.createElement('select');
+    for (const type of PROPERTY_TYPES) {
+      const option = document.createElement('option');
+      option.value = type;
+      option.textContent = type;
+      typeSelect.append(option);
+    }
+    typeSelect.value = property.type;
+    typeSelect.addEventListener('change', () => {
+      property.type = typeSelect.value;
+      property.value = defaultPropertyValue(property.type, property.value);
+    });
+
+    const valueInput = document.createElement('input');
+    valueInput.type = 'text';
+    valueInput.value =
+      typeof property.value === 'object'
+        ? JSON.stringify(property.value)
+        : String(property.value ?? '');
+    valueInput.placeholder = '默认值';
+    valueInput.addEventListener('input', () => {
+      property.value = valueInput.value;
+    });
+
+    const remove = document.createElement('button');
+    remove.className = 'sig-remove';
+    remove.textContent = '×';
+    remove.addEventListener('click', () => {
+      classDraft.properties = classDraft.properties.filter((item) => item !== property);
+      renderClassProperties();
+    });
+
+    row.append(nameInput, typeSelect, valueInput, remove);
+    container.append(row);
+  }
+}
+
+function addClassProperty() {
+  const name = $('class-prop-name').value.trim();
+  if (!isValidIdentifier(name)) {
+    toast('属性名需以字母、下划线或 $ 开头');
+    return;
+  }
+  if (classDraft.properties.some((property) => property.name === name)) {
+    toast('属性已存在');
+    return;
+  }
+  const type = $('class-prop-type').value;
+  const raw = $('class-prop-value').value.trim();
+  let value = raw;
+
+  if (type === 'number') {
+    if (raw !== '' && !Number.isFinite(Number(raw))) {
+      toast('默认值需为数字');
+      return;
+    }
+    value = raw === '' ? 0 : Number(raw);
+  } else if (type === 'boolean') {
+    value = raw === 'true';
+  } else if (type === 'object' || type === 'array') {
+    if (raw) {
+      try {
+        JSON.parse(raw);
+      } catch {
+        toast('默认值需为合法 JSON');
+        return;
+      }
+    }
+  }
+
+  classDraft.properties.push({
+    id: generateId('p'),
+    name,
+    type,
+    value: defaultPropertyValue(type, value),
+  });
+  $('class-prop-name').value = '';
+  $('class-prop-value').value = '';
+  renderClassProperties();
+}
+
+function syncClassPropertyNodes(cls, removedPropertyIds = []) {
+  const validSelfNames = new Set(listClassSelfNodeNames(cls));
+  const removed = new Set(removedPropertyIds);
+  removeNodesEverywhere((node) => {
+    const isSelf =
+      node.name.startsWith(`clsselfget:${cls.id}:`) ||
+      node.name.startsWith(`clsselfset:${cls.id}:`);
+    if (isSelf) return !validSelfNames.has(node.name);
+
+    const parts = node.name.split(':');
+    if (
+      parts.length === 3 &&
+      (parts[0] === 'clsget' || parts[0] === 'clsset') &&
+      parts[1] === cls.id
+    ) {
+      return removed.has(parts[2]);
+    }
+    return false;
+  });
+}
+
+function saveClassSettings() {
+  const cls = workspace.classes.find((item) => item.id === classSettingsId);
+  if (!cls) {
+    closeSheet('class-settings');
+    return;
+  }
+  const name = $('class-settings-name').value.trim();
+  if (!name) {
+    toast('请输入类名');
+    return;
+  }
+  if (workspace.classes.some((item) => item.id !== cls.id && item.name === name)) {
+    toast('类名已存在');
+    return;
+  }
+
+  const usedNames = new Set();
+  const properties = [];
+  for (const property of classDraft.properties) {
+    const propertyName = String(property.name || '').trim();
+    if (!isValidIdentifier(propertyName)) {
+      toast(`属性名不合法：${propertyName || '(空)'}`);
+      return;
+    }
+    if (usedNames.has(propertyName)) {
+      toast(`属性名重复：${propertyName}`);
+      return;
+    }
+    usedNames.add(propertyName);
+    properties.push({
+      id: property.id,
+      name: propertyName,
+      type: PROPERTY_TYPES.includes(property.type) ? property.type : 'string',
+      value: defaultPropertyValue(property.type, property.value),
+    });
+  }
+
+  syncCurrentScope();
+  const oldIds = new Set((cls.properties || []).map((property) => property.id));
+  const newIds = new Set(properties.map((property) => property.id));
+  const removedPropertyIds = [...oldIds].filter((id) => !newIds.has(id));
+
+  cls.name = name;
+  cls.properties = properties;
+  applyDynamicDefs();
+  syncClassPropertyNodes(cls, removedPropertyIds);
+  pruneAllConnections();
+
+  const target = getScopeGraph(currentScope) || workspace.main;
+  editor.setGraph(target, { fit: false, recordHistory: false });
+  editor.clearHistory();
+  markDirty();
+  renderClasses();
+  renderPalette();
+  updateStats();
+  updateScopeBar();
+  refreshHistoryButtons();
+  closeSheet('class-settings');
+  toast('类设置已保存');
+}
+
+
 
 function openFunctionNameSheet(mode) {
   pendingFunctionMode = mode;
@@ -774,7 +1316,7 @@ function executeWrap(name) {
   }
 
   workspace.functions.push(result.functionDef);
-  applyFunctionNodeDefs(workspace.functions);
+  applyDynamicDefs();
 
   editor.setGraph(result.outerGraph, { fit: false, recordHistory: true });
   editor.selectNode(result.callNodeId);
@@ -788,12 +1330,12 @@ function executeWrap(name) {
   }
 }
 
-/* ---------------- 函数签名 ---------------- */
+/* ---------------- 函数 / 方法签名 ---------------- */
 
 function openSignature(fnId) {
   const fn = workspace.functions.find((item) => item.id === fnId);
   if (!fn) return;
-  signatureFunctionId = fnId;
+  signatureTarget = { kind: 'function', id: fnId };
   signatureDraft = {
     name: fn.name,
     inputs: (fn.inputs || []).map((entry) => ({ ...entry })),
@@ -801,6 +1343,23 @@ function openSignature(fnId) {
   };
   $('signature-name').value = fn.name;
   $('signature-sub').textContent = `输入 ${signatureDraft.inputs.length} · 输出 ${signatureDraft.outputs.length}`;
+  renderSignatureRows('inputs');
+  renderSignatureRows('outputs');
+  openSheet('signature');
+}
+
+function openMethodSignature(classId, methodId) {
+  const cls = workspace.classes.find((item) => item.id === classId);
+  const method = cls?.methods?.find((item) => item.id === methodId);
+  if (!cls || !method) return;
+  signatureTarget = { kind: 'method', classId, methodId };
+  signatureDraft = {
+    name: method.name,
+    inputs: (method.inputs || []).map((entry) => ({ ...entry })),
+    outputs: (method.outputs || []).map((entry) => ({ ...entry })),
+  };
+  $('signature-name').value = method.name;
+  $('signature-sub').textContent = `${cls.name} · 输入 ${signatureDraft.inputs.length} · 输出 ${signatureDraft.outputs.length}`;
   renderSignatureRows('inputs');
   renderSignatureRows('outputs');
   openSheet('signature');
@@ -973,54 +1532,135 @@ function syncSignatureNodes(fn) {
   });
 }
 
+/** 根据方法签名自动补齐/清理方法内部的参数与返回节点 */
+function syncMethodSignatureNodes(cls, method) {
+  if (!cls || !method) return;
+  if (!method.graph) method.graph = { nodes: [], connections: [], variables: [] };
+  const graph = method.graph;
+  graph.nodes = graph.nodes || [];
+  graph.connections = graph.connections || [];
+
+  const minX = graph.nodes.length ? Math.min(...graph.nodes.map((node) => node.position.x)) : 40;
+  const minY = graph.nodes.length ? Math.min(...graph.nodes.map((node) => node.position.y)) : 60;
+  const maxX = graph.nodes.length
+    ? Math.max(
+        ...graph.nodes.map(
+          (node) => node.position.x + (getNodeLayout(node)?.width || 180)
+        )
+      )
+    : 260;
+
+  (method.inputs || []).forEach((entry, index) => {
+    const name = classArgDefName(cls.id, method.id, entry.id);
+    if (!graph.nodes.some((node) => node.name === name)) {
+      graph.nodes.push({
+        id: generateId('n'),
+        name,
+        position: { x: minX - 260, y: minY + 40 + index * 110 },
+        data: {},
+      });
+    }
+  });
+
+  (method.outputs || []).forEach((entry, index) => {
+    const name = classRetDefName(cls.id, method.id, entry.id);
+    if (!graph.nodes.some((node) => node.name === name)) {
+      graph.nodes.push({
+        id: generateId('n'),
+        name,
+        position: { x: maxX + 80, y: minY + 40 + index * 110 },
+        data: {},
+      });
+    }
+  });
+
+  const validNames = new Set([
+    ...(method.inputs || []).map((entry) => classArgDefName(cls.id, method.id, entry.id)),
+    ...(method.outputs || []).map((entry) => classRetDefName(cls.id, method.id, entry.id)),
+  ]);
+  graph.nodes = graph.nodes.filter((node) => {
+    if (
+      node.name.startsWith(`clsarg:${cls.id}:${method.id}:`) ||
+      node.name.startsWith(`clsret:${cls.id}:${method.id}:`)
+    ) {
+      return validNames.has(node.name);
+    }
+    return true;
+  });
+}
+
 function saveSignature() {
-  const fn = workspace.functions.find((item) => item.id === signatureFunctionId);
-  if (!fn) {
+  if (!signatureTarget) {
     closeSheet('signature');
     return;
   }
   const name = $('signature-name').value.trim();
   if (!name) {
-    toast('请输入函数名');
-    return;
-  }
-  if (workspace.functions.some((item) => item.id !== fn.id && item.name === name)) {
-    toast('函数名已存在');
+    toast(signatureTarget.kind === 'method' ? '请输入方法名' : '请输入函数名');
     return;
   }
 
-  syncCurrentScope();
-  fn.name = name;
-  fn.inputs = signatureDraft.inputs.map((entry, index) => ({
+  const inputs = signatureDraft.inputs.map((entry, index) => ({
     id: entry.id,
     name: (entry.name || '').trim() || `输入${index + 1}`,
     type: entry.type || 'string',
   }));
-  fn.outputs = signatureDraft.outputs.map((entry, index) => ({
+  const outputs = signatureDraft.outputs.map((entry, index) => ({
     id: entry.id,
     name: (entry.name || '').trim() || `输出${index + 1}`,
     type: entry.type || 'string',
   }));
 
-  applyFunctionNodeDefs(workspace.functions);
-  syncSignatureNodes(fn);
+  syncCurrentScope();
+
+  if (signatureTarget.kind === 'function') {
+    const fn = workspace.functions.find((item) => item.id === signatureTarget.id);
+    if (!fn) {
+      closeSheet('signature');
+      return;
+    }
+    if (workspace.functions.some((item) => item.id !== fn.id && item.name === name)) {
+      toast('函数名已存在');
+      return;
+    }
+    fn.name = name;
+    fn.inputs = inputs;
+    fn.outputs = outputs;
+    applyDynamicDefs();
+    syncSignatureNodes(fn);
+  } else {
+    const cls = workspace.classes.find((item) => item.id === signatureTarget.classId);
+    const method = cls?.methods?.find((item) => item.id === signatureTarget.methodId);
+    if (!cls || !method) {
+      closeSheet('signature');
+      return;
+    }
+    if ((cls.methods || []).some((item) => item.id !== method.id && item.name === name)) {
+      toast('方法名已存在');
+      return;
+    }
+    method.name = name;
+    method.inputs = inputs;
+    method.outputs = outputs;
+    applyDynamicDefs();
+    syncMethodSignatureNodes(cls, method);
+  }
+
   pruneAllConnections();
 
-  const target =
-    currentScope === 'main'
-      ? workspace.main
-      : workspace.functions.find((item) => item.id === currentScope)?.graph || workspace.main;
+  const target = getScopeGraph(currentScope) || workspace.main;
   editor.setGraph(target, { fit: false, recordHistory: false });
   editor.clearHistory();
 
   markDirty();
   renderFunctions();
+  renderClasses();
   renderPalette();
   updateScopeBar();
   updateStats();
   refreshHistoryButtons();
   closeSheet('signature');
-  toast('函数设置已保存');
+  toast(signatureTarget.kind === 'method' ? '方法设置已保存' : '函数设置已保存');
 }
 
 function pruneAllConnections() {
@@ -1038,6 +1678,9 @@ function pruneAllConnections() {
   };
   pruneScope(workspace.main);
   for (const fn of workspace.functions) pruneScope(fn.graph);
+  for (const cls of workspace.classes) {
+    for (const method of cls.methods || []) pruneScope(method.graph);
+  }
 }
 
 function refreshSelectionBar() {
@@ -1363,6 +2006,10 @@ function renderNodeCard() {
   if (node.name.startsWith('fncall:')) {
     body.append(buildFunctionCallActions(node));
   }
+  if (isClassNodeName(node.name)) {
+    const actions = buildClassNodeActions(node);
+    if (actions) body.append(actions);
+  }
   if (node.name === 'varget' || node.name === 'varset') {
     body.append(buildVariablePicker(node));
   }
@@ -1464,6 +2111,10 @@ function renderInspector() {
   if (node.name.startsWith('fncall:')) {
     body.append(buildFunctionCallActions(node));
   }
+  if (isClassNodeName(node.name)) {
+    const classActions = buildClassNodeActions(node);
+    if (classActions) body.append(classActions);
+  }
 
   if (node.name === 'varget' || node.name === 'varset') {
     body.append(buildVariablePicker(node));
@@ -1537,6 +2188,60 @@ function buildFunctionCallActions(node) {
 
   wrap.append(info, ops);
   return wrap;
+}
+
+function buildClassNodeActions(node) {
+  const parts = String(node.name).split(':');
+  const classId = parts[1];
+  const cls = workspace.classes.find((item) => item.id === classId);
+  if (!cls) return null;
+
+  const wrap = div('fn-quick');
+  const info = div('fn-quick-info');
+  info.append(
+    span('fn-quick-name', cls.name),
+    span(
+      'var-type',
+      `属性 ${(cls.properties || []).length} · 方法 ${(cls.methods || []).length}`
+    )
+  );
+
+  const ops = div('fn-ops');
+  if (parts[0] === 'clscall' && parts[2]) {
+    const method = (cls.methods || []).find((item) => item.id === parts[2]);
+    ops.append(
+      makeMiniButton('进入方法', () => {
+        if (method) enterScope(methodScopeId(cls.id, method.id));
+      }),
+      makeMiniButton('方法设置', () => {
+        if (method) {
+          closeSheet('inspector');
+          openMethodSignature(cls.id, method.id);
+        }
+      })
+    );
+  }
+  ops.append(
+    makeMiniButton('类设置', () => {
+      closeSheet('inspector');
+      openClassSettings(cls.id);
+    })
+  );
+
+  wrap.append(info, ops);
+  return wrap;
+}
+
+function isClassNodeName(name) {
+  return (
+    typeof name === 'string' &&
+    (name.startsWith('clsnew:') ||
+      name.startsWith('clsget:') ||
+      name.startsWith('clsset:') ||
+      name.startsWith('clscall:') ||
+      name.startsWith('clsselfget:') ||
+      name.startsWith('clsselfset:'))
+  );
 }
 
 function buildConnectedRow(pin) {
@@ -2061,10 +2766,12 @@ function updateStats() {
   const triggerCount = graph.nodes.filter(
     (node) => getNodeDef(node.name)?.type === 'begin'
   ).length;
-  $('stats').textContent = `${graph.nodes.length} 个节点 · ${triggerCount} 个触发 · ${graph.connections.length} 条连线 · ${graph.variables.length} 个变量 · ${workspace.functions.length} 个函数`;
+  $('stats').textContent = `${graph.nodes.length} 个节点 · ${triggerCount} 个触发 · ${graph.connections.length} 条连线 · ${graph.variables.length} 个变量 · ${workspace.functions.length} 个函数 · ${workspace.classes.length} 个类`;
   $('variable-count').textContent = String(graph.variables.length);
   const functionCount = $('function-count');
   if (functionCount) functionCount.textContent = String(workspace.functions.length);
+  const classCount = $('class-count');
+  if (classCount) classCount.textContent = String(workspace.classes.length);
 }
 
 function exportGraph() {
@@ -2117,12 +2824,21 @@ async function applyModule(payload, options = {}) {
   const result = mergeModuleGraph(editor.getGraph(), payload, {
     targetScope: currentScope,
     takenFunctionNames: workspace.functions.map((fn) => fn.name),
+    takenClassNames: workspace.classes.map((cls) => cls.name),
   });
 
   if (result.functions.length > 0) {
     workspace.functions.push(...result.functions);
-    applyFunctionNodeDefs(workspace.functions);
+  }
+  if ((result.classes || []).length > 0) {
+    workspace.classes.push(...result.classes);
+  }
+  if (result.functions.length > 0 || (result.classes || []).length > 0) {
+    applyDynamicDefs();
     for (const fn of result.functions) syncSignatureNodes(fn);
+    for (const cls of result.classes || []) {
+      for (const method of cls.methods || []) syncMethodSignatureNodes(cls, method);
+    }
   }
 
   editor.setGraph(result.graph, { fit: options.fit !== false });
@@ -2344,7 +3060,13 @@ function bindUI() {
 
   $('scope-back').addEventListener('click', () => goBackScope());
   $('btn-function-settings').addEventListener('click', () => {
-    if (currentScope !== 'main') openSignature(currentScope);
+    if (currentScope === 'main') return;
+    const methodScope = parseMethodScopeId(currentScope);
+    if (methodScope) {
+      openMethodSignature(methodScope.classId, methodScope.methodId);
+      return;
+    }
+    openSignature(currentScope);
   });
   $('inspector-fullscreen').addEventListener('click', () => {
     const sheet = $('sheet-inspector');
@@ -2423,6 +3145,27 @@ function bindUI() {
     closeSheet('menu');
     openFunctions();
   });
+  $('open-classes').addEventListener('click', () => {
+    closeSheet('menu');
+    openClasses();
+  });
+  $('create-class').addEventListener('click', () => {
+    let index = workspace.classes.length + 1;
+    let name = `类${index}`;
+    while (workspace.classes.some((cls) => cls.name === name)) {
+      index += 1;
+      name = `类${index}`;
+    }
+    openPrompt({
+      title: '新建类',
+      hint: '创建后可添加属性与方法',
+      value: name,
+      reopen: openClasses,
+      onConfirm: (value) => createClass(value),
+    });
+  });
+  $('class-prop-add').addEventListener('click', addClassProperty);
+  $('class-settings-save').addEventListener('click', saveClassSettings);
   $('save-blueprint').addEventListener('click', () => saveCurrentBlueprint());
   $('manage-blueprints').addEventListener('click', () => {
     closeSheet('menu');

@@ -44,9 +44,14 @@
 ```text
 workspace
 ├── main       主图
-└── functions[]
-    ├── fn A   函数子图
-    └── fn B   函数子图
+├── functions[]
+│   ├── fn A   函数子图
+│   └── fn B   函数子图
+└── classes[]
+    └── cls A
+        ├── properties[]
+        └── methods[]
+            └── method graph  方法子图
 ```
 
 每个作用域包含：
@@ -60,6 +65,15 @@ workspace
 - `id`
 - `name`
 - `inputs` / `outputs` 签名
+
+类额外包含：
+
+- `id`
+- `name`
+- `properties`：属性 id、名称、类型、默认值
+- `methods`：方法 id、名称、输入/输出签名、方法子图
+
+方法子图的作用域 id 为 `cls:<classId>:<methodId>`。
 
 ### 2.2 端点
 
@@ -166,12 +180,13 @@ compileGraph(graph) -> string
 
 流程：
 
-1. 读取 `graph.functions`
-2. 注册函数动态节点定义（`fncall` / `fnarg` / `fnret` 等）
+1. 读取 `graph.functions` 与 `graph.classes`
+2. 注册函数与类动态节点定义（`fncall` / `fnarg` / `fnret` / `clsnew` / `clscall` 等）
 3. 检测函数循环调用
 4. 编译每个函数为 async 函数
-5. 为主图每个触发节点生成独立任务
-6. 拼接任务调度代码
+5. 编译每个类为 class（属性初始化 + async 方法）
+6. 为主图每个触发节点生成独立任务
+7. 拼接任务调度代码
 
 ### 4.2 变量声明
 
@@ -255,7 +270,36 @@ var out1 = result == null ? undefined : result["o1"];
 - 函数可以嵌套调用其它函数
 - 函数循环调用会在编译前被检测并拒绝
 
-### 4.7 多触发任务
+### 4.7 类编译
+
+每个类编译为真正的 JavaScript class：
+
+```js
+class _cls_类名_类id {
+  constructor(__init = {}) {
+    this["count"] = __init["属性id"] !== undefined ? __init["属性id"] : 0;
+  }
+  async ["increment"](_arg_参数id) {
+    let __fnResult = {};
+    // 方法变量声明
+    // 从方法内开始节点生成执行流
+    __fnResult["输出参数id"] = 输出值;
+    return __fnResult;
+  }
+}
+```
+
+要点：
+
+- 属性使用 `this["属性名"]` 方括号访问，支持任意属性名
+- 构造参数按属性 id 传值，缺省时回退属性默认值
+- 方法使用计算属性名 `async ["方法名"]()`，支持任意方法名
+- 方法体复用函数编译逻辑：变量声明、执行流、数据流
+- 方法返回值节点 `clsret:*` 在方法末尾统一写入返回对象
+- 类与函数可以互相引用：函数可实例化类，方法可调用函数或其它类
+- 类声明与函数声明都在任务运行前完成初始化
+
+### 4.8 多触发任务
 
 主图不再只从单个 `begin` 编译，而是遍历所有 `type === 'begin'` 的节点：
 
@@ -293,7 +337,7 @@ const __results = await Promise.allSettled(__tasks.map((task) => task.run()));
 部分触发任务执行失败：开始 · n1, 开始 · n2
 ```
 
-### 4.8 任务隔离
+### 4.9 任务隔离
 
 由于每个任务都是独立 async 函数：
 
@@ -419,6 +463,8 @@ else if (outcome) { error = outcome; }
 | `shared/graph-utils.js` | 布局、连线校验、图归一化 |
 | `shared/function-defs.js` | 函数动态节点定义 |
 | `shared/function-wrap.js` | 框选节点封装为函数 |
+| `shared/class-defs.js` | 类动态节点定义（实例化/属性/方法/this） |
+| `shared/dynamic-defs.js` | 函数 + 类动态节点统一注册 |
 | `shared/module-utils.js` | 模块解析、ID 重映射、合并 |
 | `shared/abi.js` | ABI 校验、序列化、模板渲染、文档生成 |
 
@@ -432,19 +478,21 @@ else if (outcome) { error = outcome; }
 
 1. `extractModule` 兼容三种输入格式
 2. 基于原始节点判断是否含触发
-3. `normalizeGraph` 归一化模块
+3. `normalizeGraph` 归一化模块（函数、类、方法）
 4. 为模块函数分配新 ID 与唯一名称
-5. 重写所有函数节点名
-6. 合并变量，处理同名同类型 / 同名不同类型
-7. 过滤触发节点（目标为函数子图或模块本身无触发时）
-8. 重映射节点 ID、连线 ID
-9. 计算位置偏移
-10. 返回合并后的图、导入函数列表与摘要
+5. 为模块类分配新 ID 与唯一名称
+6. 重写所有函数节点名与类节点名
+7. 合并变量，处理同名同类型 / 同名不同类型
+8. 过滤触发节点（目标为函数子图或模块本身无触发时）
+9. 重映射节点 ID、连线 ID
+10. 计算位置偏移
+11. 返回合并后的图、导入函数/类列表与摘要
 
 前端 `applyModule` 随后：
 
 - 把导入函数加入 `workspace.functions`
-- 重建函数动态节点定义
+- 把导入类加入 `workspace.classes`
+- 重建函数与类动态节点定义
 - 用 `editor.setGraph` 应用合并结果
 - 同步当前作用域、刷新面板与统计
 - 保存工作区

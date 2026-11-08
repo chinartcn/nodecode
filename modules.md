@@ -14,8 +14,8 @@
 Codeck Mobile 中，**工作区**和**模块**使用同一套图数据结构：
 
 ```text
-工作区 = 主图（main） + 若干函数子图（functions）
-模块   = 一张图（可携带函数子图）
+工作区 = 主图（main） + 函数子图（functions） + 类（classes）
+模块   = 一张图（可携带函数子图与类）
 ```
 
 - 导出工作区得到完整 JSON 文件
@@ -39,7 +39,8 @@ Codeck Mobile 中，**工作区**和**模块**使用同一套图数据结构：
     "nodes": [],
     "connections": [],
     "variables": [],
-    "functions": []
+    "functions": [],
+    "classes": []
   }
 }
 ```
@@ -66,7 +67,8 @@ Codeck Mobile 中，**工作区**和**模块**使用同一套图数据结构：
     "connections": [],
     "variables": []
   },
-  "functions": []
+  "functions": [],
+  "classes": []
 }
 ```
 
@@ -77,14 +79,15 @@ Codeck Mobile 中，**工作区**和**模块**使用同一套图数据结构：
   "nodes": [],
   "connections": [],
   "variables": [],
-  "functions": []
+  "functions": [],
+  "classes": []
 }
 ```
 
 解析优先级：
 
 1. 存在 `graph.nodes` → 使用 `graph`
-2. 存在 `main.nodes` → 组合 `main` 与 `functions`
+2. 存在 `main.nodes` → 组合 `main`、`functions` 与 `classes`
 3. 存在 `nodes` 数组 → 直接作为图
 
 名称优先取 `name`，其次 `moduleName`，都没有则使用「导入模块」。
@@ -99,6 +102,7 @@ interface Graph {
   connections: Connection[];
   variables: Variable[];
   functions?: FunctionDef[];
+  classes?: ClassDef[];
 }
 
 interface Node {
@@ -130,6 +134,28 @@ interface FunctionDef {
   graph: Graph;
 }
 
+interface ClassDef {
+  id: string;
+  name: string;
+  properties: ClassProperty[];
+  methods: ClassMethod[];
+}
+
+interface ClassProperty {
+  id: string;
+  name: string;
+  type: 'string' | 'number' | 'boolean' | 'object' | 'array';
+  value: unknown;
+}
+
+interface ClassMethod {
+  id: string;
+  name: string;
+  inputs: SignatureEntry[];
+  outputs: SignatureEntry[];
+  graph: Graph;
+}
+
 interface SignatureEntry {
   id: string;
   name: string;
@@ -142,7 +168,7 @@ interface SignatureEntry {
 | 字段 | 说明 |
 | --- | --- |
 | `id` | 节点唯一 ID，同一作用域内不能重复 |
-| `name` | 节点类型名；内置节点如 `log`、`if`；函数节点如 `fncall:<fnId>` |
+| `name` | 节点类型名；内置节点如 `log`、`if`；函数节点如 `fncall:<fnId>`；类节点如 `clsnew:<classId>`、`clscall:<classId>:<methodId>` |
 | `position` | 世界坐标，单位与缩放为 1 时的 CSS 像素一致 |
 | `data` | 节点参数，键名对应端点名或节点自定义字段 |
 
@@ -177,6 +203,30 @@ interface SignatureEntry {
 | `inputs` | 输入参数签名 |
 | `outputs` | 输出参数签名 |
 | `graph` | 函数子图 |
+
+### 3.5 ClassDef
+
+| 字段 | 说明 |
+| --- | --- |
+| `id` | 类唯一 ID |
+| `name` | 类显示名称 |
+| `properties` | 属性列表，每项含 `id`、`name`、`type`、`value` |
+| `methods` | 方法列表，每个方法含 `id`、`name`、`inputs`、`outputs`、`graph` |
+
+类相关节点命名：
+
+| 节点名 | 说明 |
+| --- | --- |
+| `clsnew:<classId>` | 创建实例 |
+| `clsget:<classId>:<propId>` | 读取实例属性 |
+| `clsset:<classId>:<propId>` | 写入实例属性 |
+| `clscall:<classId>:<methodId>` | 调用实例方法 |
+| `clsselfget:<classId>:<propId>` | 方法内读取 `this` 属性 |
+| `clsselfset:<classId>:<propId>` | 方法内写入 `this` 属性 |
+| `clsarg:<classId>:<methodId>:<entryId>` | 方法输入参数节点 |
+| `clsret:<classId>:<methodId>:<entryId>` | 方法返回值节点 |
+
+方法子图的作用域 ID 为 `cls:<classId>:<methodId>`。
 
 ---
 
@@ -220,6 +270,9 @@ interface SignatureEntry {
 | 函数 | 生成新 `fn_...` ID |
 | 函数内部节点 | 重新分配节点 ID |
 | 函数参数 | 保留参数 ID（仅在函数内部使用） |
+| 类 | 生成新 `cls_...` ID |
+| 类方法子图节点 | 重新分配节点 ID |
+| 类属性 / 方法 | 保留属性 ID 与方法 ID（仅在类内部使用） |
 
 函数相关节点名会同步改写：
 
@@ -229,12 +282,22 @@ interface SignatureEntry {
 - `fnarg:<oldFnId>:<entryId>` → `fnarg:<newFnId>:<entryId>`
 - `fnret:<oldFnId>:<entryId>` → `fnret:<newFnId>:<entryId>`
 
-### 5.3 函数命名
+类相关节点名会同步改写：
+
+- `clsnew:<oldClassId>` → `clsnew:<newClassId>`
+- `clsget:<oldClassId>:<propId>` → `clsget:<newClassId>:<propId>`
+- `clsset:<oldClassId>:<propId>` → `clsset:<newClassId>:<propId>`
+- `clscall:<oldClassId>:<methodId>` → `clscall:<newClassId>:<methodId>`
+- `clsselfget` / `clsselfset` / `clsarg` / `clsret` 同理
+
+### 5.3 函数与类命名
 
 - 导入的函数总是获得新 ID
-- 若名称与现有函数冲突，自动追加序号：
+- 导入的类总是获得新 ID
+- 若名称与现有函数/类冲突，自动追加序号：
   - `打招呼` → `打招呼_2`
   - 若 `打招呼_2` 也存在 → `打招呼_3`
+- 函数与类分别使用各自的名称空间（函数 `calc` 与类 `calc` 可以共存）
 
 ### 5.4 变量合并
 
@@ -275,6 +338,7 @@ offset.y = 目标图最上边界 - 模块最上边界
   "connections": 2,
   "variables": 1,
   "functions": 1,
+  "classes": 1,
   "triggers": 1,
   "hasTrigger": true,
   "name": "外部模块"
@@ -287,6 +351,7 @@ offset.y = 目标图最上边界 - 模块最上边界
 | `connections` | 新增连线数 |
 | `variables` | 新增变量数 |
 | `functions` | 新增函数数 |
+| `classes` | 新增类数 |
 | `triggers` | 实际保留下来的触发节点数 |
 | `hasTrigger` | 模块原始数据是否含触发节点 |
 | `name` | 模块名称 |
@@ -455,6 +520,8 @@ const __results = await Promise.allSettled(__tasks.map((task) => task.run()));
 - 非法连线（节点不存在、端点不存在、类型不匹配）：丢弃
 - 重复连线：去重
 - 函数内部多余触发节点：只保留第一个
+- 类/方法 ID 或名称重复：自动重新分配/追加序号
+- 类属性 ID 或名称重复：自动重新分配/追加序号
 - 重复变量名：只保留第一个
 - 非法变量类型：回退为 `string`
 

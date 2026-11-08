@@ -13,9 +13,10 @@ import {
   getNodeDef,
   indent,
   isValidIdentifier,
-  setDynamicNodeDefs,
 } from '../shared/node-defs.js';
-import { buildFunctionNodeDefs, functionArgName, getFunctionJsName } from '../shared/function-defs.js';
+import { functionArgName, getFunctionJsName } from '../shared/function-defs.js';
+import { applyDynamicNodeDefs } from '../shared/dynamic-defs.js';
+import { getClassJsName } from '../shared/class-defs.js';
 
 /** 将节点内联输入值转换为 JS 字面量表达式 */
 function emitLiteral(editor, value) {
@@ -61,6 +62,11 @@ function emitVariable(variable) {
     }
   }
   return JSON.stringify(String(value ?? ''));
+}
+
+/** 类属性默认值 -> JS 字面量 */
+function emitPropertyDefault(property) {
+  return emitVariable({ type: property.type, value: property.value });
 }
 
 export class Compiler {
@@ -329,7 +335,8 @@ function assertNoFunctionCycles(functions) {
 
 export function compileGraph(graph) {
   const functions = Array.isArray(graph.functions) ? graph.functions : [];
-  setDynamicNodeDefs(buildFunctionNodeDefs(functions));
+  const classes = Array.isArray(graph.classes) ? graph.classes : [];
+  applyDynamicNodeDefs(functions, classes);
   assertNoFunctionCycles(functions);
 
   const functionMap = new Map(functions.map((fn) => [fn.id, fn]));
@@ -354,6 +361,45 @@ export function compileGraph(graph) {
     const parameters = (fn.inputs || []).map((entry) => functionArgName(entry.id)).join(', ');
     declarations.push(
       `async function ${getFunctionJsName(fn)}(${parameters}) {\n  let __fnResult = {};\n${indent(body, 2)}\n  return __fnResult;\n}`
+    );
+  }
+
+  // 类：编译为真正的 class，方法为 async 方法
+  for (const cls of classes) {
+    const properties = Array.isArray(cls.properties) ? cls.properties : [];
+    const methods = Array.isArray(cls.methods) ? cls.methods : [];
+    const lines = ['constructor(__init = {}) {'];
+
+    for (const property of properties) {
+      const key = JSON.stringify(property.id);
+      lines.push(
+        `  this[${JSON.stringify(property.name)}] = __init[${key}] !== undefined ? __init[${key}] : ${emitPropertyDefault(property)};`
+      );
+    }
+    lines.push('}');
+
+    for (const method of methods) {
+      const compiler = new Compiler(method.graph || {}, { prepares, functionMap });
+      let body = compiler.generateBody();
+
+      const outputPrefix = `clsret:${cls.id}:${method.id}:`;
+      for (const node of method.graph?.nodes || []) {
+        if (typeof node.name !== 'string' || !node.name.startsWith(outputPrefix)) continue;
+        const entryId = node.name.slice(outputPrefix.length);
+        const entry = (method.outputs || []).find((item) => item.id === entryId);
+        if (!entry) continue;
+        const value = compiler.getInputCode('value', node.id);
+        body += `__fnResult[${JSON.stringify(entry.id)}] = ${value};\n`;
+      }
+
+      const parameters = (method.inputs || []).map((entry) => functionArgName(entry.id)).join(', ');
+      lines.push(
+        `async [${JSON.stringify(method.name)}](${parameters}) {\n  let __fnResult = {};\n${indent(body, 2)}\n  return __fnResult;\n}`
+      );
+    }
+
+    declarations.push(
+      `class ${getClassJsName(cls)} {\n${indent(lines.join('\n'), 2)}\n}`
     );
   }
 

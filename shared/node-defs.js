@@ -22,6 +22,7 @@ export const CATEGORY_LABELS = {
   logic: '逻辑',
   data: '数据',
   function: '函数',
+  class: '类',
   io: '输入输出',
 };
 
@@ -30,6 +31,7 @@ export const CATEGORY_COLORS = {
   logic: '#a29bfe',
   data: '#4dd0c1',
   function: '#e84393',
+  class: '#f39c12',
   io: '#fdcb6e',
 };
 

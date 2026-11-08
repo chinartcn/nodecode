@@ -504,7 +504,94 @@ await _fn_函数名_函数id(参数...);
 
 ---
 
-## 8. 端点连接规则
+## 8. 类动态节点
+
+类由用户在「类管理」中创建，节点定义在运行时动态生成。
+
+### 8.1 实例化 `clsnew:<classId>`
+
+| 端点 | 方向 | 类型 | 行 | 说明 |
+| --- | --- | --- | --- | --- |
+| `$exec_in` | in | exec | 0 | 执行入口 |
+| `$exec_out` | out | exec | 0 | 执行出口 |
+| `p_<propId>` | in | port | 1..n | 每个属性一个，可覆盖默认值 |
+| `instance` | out | port | 1 | 实例 |
+
+生成代码：
+
+```js
+var instance = new _cls_类名_类id({ "属性id": 值, ... });
+```
+
+### 8.2 属性读取 `clsget:<classId>:<propId>`
+
+| 端点 | 方向 | 类型 | 行 | 说明 |
+| --- | --- | --- | --- | --- |
+| `instance` | in | port | 0 | 实例（必须连接） |
+| `value` | out | port | 1 | 属性值 |
+
+生成代码：
+
+```js
+(instance)["属性名"]
+```
+
+### 8.3 属性写入 `clsset:<classId>:<propId>`
+
+| 端点 | 方向 | 类型 | 行 | 说明 |
+| --- | --- | --- | --- | --- |
+| `$exec_in` | in | exec | 0 | 执行入口 |
+| `$exec_out` | out | exec | 0 | 执行出口 |
+| `instance` | in | port | 1 | 实例（必须连接） |
+| `value` | in | port | 2 | 要写入的值 |
+
+生成代码：
+
+```js
+(instance)["属性名"] = value;
+```
+
+### 8.4 方法调用 `clscall:<classId>:<methodId>`
+
+| 端点 | 方向 | 类型 | 行 | 说明 |
+| --- | --- | --- | --- | --- |
+| `$exec_in` | in | exec | 0 | 执行入口 |
+| `$exec_out` | out | exec | 0 | 执行出口 |
+| `instance` | in | port | 1 | 实例（必须连接） |
+| `i_<entryId>` | in | port | 2.. | 每个方法输入参数一个 |
+| `o_<entryId>` | out | port | ... | 每个方法输出参数一个 |
+
+生成代码：
+
+```js
+var result = await (instance)["方法名"](参数...);
+var 输出变量 = result == null ? undefined : result["输出参数id"];
+```
+
+无返回值的方法：
+
+```js
+await (instance)["方法名"](参数...);
+```
+
+### 8.5 方法内部节点
+
+| 节点 | 端点 | 说明 |
+| --- | --- | --- |
+| `clsselfget:<classId>:<propId>` | `value` out | 读取 `this["属性名"]` |
+| `clsselfset:<classId>:<propId>` | exec in/out、`value` in | 写入 `this["属性名"]` |
+| `clsarg:<classId>:<methodId>:<entryId>` | `value` out | 方法输入参数 |
+| `clsret:<classId>:<methodId>:<entryId>` | `value` in | 方法返回值 |
+
+说明：
+
+- `clsselfget` / `clsselfset` 只在对应类的方法子图中可用
+- 方法输入输出节点由方法签名自动生成/清理
+- 方法返回值在方法结束时写入返回对象
+
+---
+
+## 9. 端点连接规则
 
 | 规则 | 说明 |
 | --- | --- |
@@ -520,6 +607,6 @@ await _fn_函数名_函数id(参数...);
 
 ---
 
-## 9. 与扩展节点的关系
+## 10. 与扩展节点的关系
 
 外部扩展节点可以复用上述分类、端点与代码生成约定。编写自定义节点请阅读 [abi.md](abi.md)。

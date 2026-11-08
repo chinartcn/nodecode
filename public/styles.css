@@ -587,6 +587,10 @@ button {
   align-items: center;
 }
 
+.sig-row.class-prop-row {
+  grid-template-columns: 1fr 84px 1fr 34px;
+}
+
 .sig-row input,
 .sig-row select {
   width: 100%;

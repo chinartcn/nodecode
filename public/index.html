@@ -212,6 +212,9 @@
             <button class="row-btn" id="open-functions">
               函数管理 <span id="function-count" class="badge">0</span>
             </button>
+            <button class="row-btn" id="open-classes">
+              类管理 <span id="class-count" class="badge">0</span>
+            </button>
             <button class="row-btn" id="open-variables">
               变量管理 <span id="variable-count" class="badge">0</span>
             </button>
@@ -273,6 +276,64 @@
             <p class="hint">创建一个空函数，然后进入函数内部添加节点。</p>
             <button class="primary-btn wide" id="create-function">新建空函数</button>
           </div>
+        </div>
+      </section>
+
+      <!-- 类管理 -->
+      <section class="sheet" id="sheet-classes" aria-hidden="true">
+        <div class="sheet-head">
+          <div>
+            <h2>类管理</h2>
+            <p class="sub">把属性与方法封装成可实例化的类</p>
+          </div>
+          <button class="text-btn" data-close>关闭</button>
+        </div>
+        <div class="sheet-body">
+          <div class="node-list" id="class-list"></div>
+          <div class="add-var">
+            <h3>新建类</h3>
+            <p class="hint">创建后设置属性与方法，再把实例节点添加到画布。</p>
+            <button class="primary-btn wide" id="create-class">新建类</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- 类设置 -->
+      <section class="sheet" id="sheet-class-settings" aria-hidden="true">
+        <div class="sheet-head">
+          <div>
+            <h2>类设置</h2>
+            <p class="sub" id="class-settings-sub"></p>
+          </div>
+          <button class="text-btn" data-close>关闭</button>
+        </div>
+        <div class="sheet-body">
+          <label class="field">
+            <span>类名</span>
+            <input id="class-settings-name" type="text" maxlength="40" placeholder="类名" />
+          </label>
+
+          <h3 class="group-title">属性</h3>
+          <div class="sig-list" id="class-properties"></div>
+          <div class="form-grid">
+            <input id="class-prop-name" type="text" placeholder="属性名，如 count" autocomplete="off" />
+            <select id="class-prop-type">
+              <option value="string">文本</option>
+              <option value="number">数字</option>
+              <option value="boolean">布尔</option>
+              <option value="object">对象</option>
+              <option value="array">数组</option>
+            </select>
+          </div>
+          <input
+            id="class-prop-value"
+            type="text"
+            placeholder="默认值（对象 / 数组请填 JSON）"
+            autocomplete="off"
+          />
+          <button class="row-btn" id="class-prop-add">＋ 添加属性</button>
+
+          <button class="primary-btn wide" id="class-settings-save">保存类设置</button>
         </div>
       </section>
 

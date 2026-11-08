@@ -561,10 +561,11 @@ console.log(window.NodeCode.abi.getNodes().length);
 | 方法 | 返回 | 说明 |
 | --- | --- | --- |
 | `getGraph()` | `Graph` | 当前作用域的图（深拷贝） |
-| `getWorkspace()` | `WorkspaceGraph` | 完整工作区（主图 + 函数） |
-| `getScope()` | `'main' \| string` | 当前作用域，`main` 或函数 id |
+| `getWorkspace()` | `WorkspaceGraph` | 完整工作区（主图 + 函数 + 类） |
+| `getScope()` | `'main' \| string` | 当前作用域：`main`、函数 id 或 `cls:<classId>:<methodId>` |
 | `getScopeStack()` | `[{ id, name }]` | 当前子图路径 |
 | `getFunctions()` | `[{ id, name, inputs, outputs }]` | 函数列表 |
+| `getClasses()` | `[{ id, name, properties, methods }]` | 类列表（含属性与方法签名） |
 | `getNodeDefs()` | `NodeDef[]` | 当前添加面板可用的节点定义 |
 | `getNodeCatalog()` | `Promise<{ abiVersion, nodes }>` | 请求 `/api/nodes` |
 | `getAbi()` | `Promise<object>` | 请求 `/api/abi` |
@@ -575,7 +576,7 @@ console.log(window.NodeCode.abi.getNodes().length);
 
 | 方法 | 说明 |
 | --- | --- |
-| `enterScope(id)` | 进入函数子图；`id` 为函数 id |
+| `enterScope(id)` | 进入函数子图或类方法子图；函数传函数 id，方法传 `cls:<classId>:<methodId>` |
 | `backScope()` | 返回上一级子图，最终回到主图 |
 
 #### 编辑
@@ -694,6 +695,7 @@ console.log(summary);
   "connections": 1,
   "variables": 0,
   "functions": 0,
+  "classes": 0,
   "triggers": 1,
   "hasTrigger": true,
   "name": "外部模块"
@@ -751,11 +753,12 @@ interface Graph {
   connections: Connection[];
   variables: Variable[];
   functions?: FunctionDef[];
+  classes?: ClassDef[];
 }
 
 interface Node {
   id: string;
-  name: string;            // 节点类型名，如 'log'、'fncall:fn_xxx'
+  name: string;            // 节点类型名，如 'log'、'fncall:fn_xxx'、'clsnew:cls_xxx'
   position: { x: number; y: number };
   data: Record<string, unknown>;
 }
@@ -786,6 +789,28 @@ interface FunctionDef {
   };
 }
 
+interface ClassDef {
+  id: string;
+  name: string;
+  properties: {
+    id: string;
+    name: string;
+    type: 'string' | 'number' | 'boolean' | 'object' | 'array';
+    value: unknown;
+  }[];
+  methods: {
+    id: string;
+    name: string;
+    inputs: SignatureEntry[];
+    outputs: SignatureEntry[];
+    graph: {
+      nodes: Node[];
+      connections: Connection[];
+      variables: Variable[];
+    };
+  }[];
+}
+
 interface SignatureEntry {
   id: string;
   name: string;
@@ -801,6 +826,7 @@ interface SignatureEntry {
 - 未知节点类型（`name` 不存在）会被丢弃
 - 重复节点 id 只保留第一个
 - 函数内部只保留第一个触发节点；主图允许多个
+- 类/方法/属性 id 或名称重复时自动重新分配或追加序号
 - 连线两端节点或端点不存在、类型不匹配时会被丢弃
 - 重复连线（相同四点）会被去重
 - 变量名重复时只保留第一个
@@ -810,8 +836,9 @@ interface SignatureEntry {
 
 - `main`：主图
 - `functions[i].graph`：函数子图
+- `classes[i].methods[j].graph`：类方法子图，作用域 id 为 `cls:<classId>:<methodId>`
 
-每个作用域有自己的 `nodes` / `connections` / `variables`。函数签名的输入输出参数通过函数动态节点在子图内外传值。
+每个作用域有自己的 `nodes` / `connections` / `variables`。函数签名与方法签名的输入输出参数通过动态节点在子图内外传值。
 
 ---
 

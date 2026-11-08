@@ -2,16 +2,26 @@
  * 模块（外部子图）工具：解析模块 JSON、识别触发节点、合并到当前工作区。
  *
  * 语义：
- * - 模块 JSON 就是一张图（可携带 functions）。
+ * - 模块 JSON 就是一张图（可携带 functions / classes）。
  * - 含触发节点的模块合并进主图后，触发节点作为独立入口并发运行。
  * - 纯数据模块合并后不添加触发节点，仅保留节点/连线，由用户继续连线传值。
- * - 所有节点、连线、函数 id 都会重新分配，避免与现有工作区冲突。
+ * - 所有节点、连线、函数、类 id 都会重新分配，避免与现有工作区冲突。
  */
 
 import { getNodeDef } from './node-defs.js';
 import { generateId, getNodeLayout, normalizeGraph } from './graph-utils.js';
 
 const FUNCTION_NODE_PREFIXES = ['fncall:', 'fnin:', 'fnout:', 'fnarg:', 'fnret:'];
+const CLASS_NODE_PREFIXES = [
+  'clsnew:',
+  'clsget:',
+  'clsset:',
+  'clscall:',
+  'clsselfget:',
+  'clsselfset:',
+  'clsarg:',
+  'clsret:',
+];
 
 export function isTriggerNode(node) {
   return getNodeDef(node?.name)?.type === 'begin';
@@ -37,6 +47,7 @@ export function extractModule(payload) {
       connections: data.main.connections,
       variables: data.main.variables,
       functions: data.functions || data.graph?.functions,
+      classes: data.classes || data.graph?.classes,
     };
   } else if (Array.isArray(data.nodes)) {
     graph = data;
@@ -60,6 +71,25 @@ function remapFunctionNodeName(name, fnIdMap) {
     return `${prefix}${newId}${separator === -1 ? '' : rest.slice(separator)}`;
   }
   return name;
+}
+
+/** 把类 id 变化同步到各种类节点名上 */
+function remapClassNodeName(name, classIdMap) {
+  if (typeof name !== 'string' || classIdMap.size === 0) return name;
+  for (const prefix of CLASS_NODE_PREFIXES) {
+    if (!name.startsWith(prefix)) continue;
+    const rest = name.slice(prefix.length);
+    const separator = rest.indexOf(':');
+    const oldId = separator === -1 ? rest : rest.slice(0, separator);
+    const newId = classIdMap.get(oldId);
+    if (!newId) return name;
+    return `${prefix}${newId}${separator === -1 ? '' : rest.slice(separator)}`;
+  }
+  return name;
+}
+
+function remapDynamicNodeName(name, fnIdMap, classIdMap) {
+  return remapClassNodeName(remapFunctionNodeName(name, fnIdMap), classIdMap);
 }
 
 function boundsOf(nodes) {
@@ -89,7 +119,7 @@ function computeOffset(targetNodes, sourceNodes) {
   return { x: target.maxX - source.minX + 80, y: target.minY - source.minY };
 }
 
-function remapScopeGraph(graph, fnIdMap) {
+function remapScopeGraph(graph, fnIdMap, classIdMap) {
   const source = graph && typeof graph === 'object' ? graph : {};
   const idMap = new Map();
   const nodes = (source.nodes || []).map((node) => {
@@ -98,7 +128,7 @@ function remapScopeGraph(graph, fnIdMap) {
     return {
       ...clone(node),
       id,
-      name: remapFunctionNodeName(node.name, fnIdMap),
+      name: remapDynamicNodeName(node.name, fnIdMap, classIdMap),
     };
   });
   const connections = (source.connections || [])
@@ -164,11 +194,52 @@ export function mergeModuleGraph(targetGraph, payload, options = {}) {
       graph: null,
     });
   }
+  // 类：统一分配新 id；名称冲突时追加序号
+  const takenClassNames = new Set(options.takenClassNames || []);
+  const classIdMap = new Map();
+  const importedClasses = [];
+  for (const cls of normalized.classes || []) {
+    const newId = generateId('cls');
+    classIdMap.set(cls.id, newId);
+    let name = String(cls.name || '类').trim() || '类';
+    if (takenClassNames.has(name)) {
+      let index = 2;
+      while (takenClassNames.has(`${name}_${index}`)) index += 1;
+      name = `${name}_${index}`;
+    }
+    takenClassNames.add(name);
+    importedClasses.push({
+      id: newId,
+      name,
+      properties: clone(cls.properties || []),
+      methods: (cls.methods || []).map((method) => ({
+        id: method.id,
+        name: method.name,
+        inputs: clone(method.inputs || []),
+        outputs: clone(method.outputs || []),
+        graph: null,
+      })),
+    });
+  }
+
+  // 函数与类都分配完 id 后，再重写各子图（函数可调用类，方法也可调用函数/类）
   for (let index = 0; index < (normalized.functions || []).length; index += 1) {
     importedFunctions[index].graph = remapScopeGraph(
       normalized.functions[index].graph,
-      fnIdMap
+      fnIdMap,
+      classIdMap
     );
+  }
+  for (let classIndex = 0; classIndex < (normalized.classes || []).length; classIndex += 1) {
+    const sourceClass = normalized.classes[classIndex];
+    const targetClass = importedClasses[classIndex];
+    for (let methodIndex = 0; methodIndex < (sourceClass.methods || []).length; methodIndex += 1) {
+      targetClass.methods[methodIndex].graph = remapScopeGraph(
+        sourceClass.methods[methodIndex].graph,
+        fnIdMap,
+        classIdMap
+      );
+    }
   }
 
   // 变量：同名同类型复用，同名不同类型则重命名
@@ -212,7 +283,7 @@ export function mergeModuleGraph(targetGraph, payload, options = {}) {
     }
     return {
       id,
-      name: remapFunctionNodeName(node.name, fnIdMap),
+      name: remapDynamicNodeName(node.name, fnIdMap, classIdMap),
       position: {
         x: (node.position?.x || 0) + offset.x,
         y: (node.position?.y || 0) + offset.y,
@@ -244,11 +315,13 @@ export function mergeModuleGraph(targetGraph, payload, options = {}) {
       variables: target.variables,
     },
     functions: importedFunctions,
+    classes: importedClasses,
     summary: {
       nodes: addedNodes.length,
       connections: addedConnections.length,
       variables: target.variables.length - originalVariableCount,
       functions: importedFunctions.length,
+      classes: importedClasses.length,
       triggers: addedNodes.filter(isTriggerNode).length,
       hasTrigger: sourceHasTrigger,
       name: parsed.name,

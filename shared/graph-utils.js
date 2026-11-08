@@ -10,9 +10,9 @@ import {
   NODE_HEADER_HEIGHT,
   NODE_ROW_HEIGHT,
   getNodeDef,
-  setDynamicNodeDefs,
 } from './node-defs.js';
-import { buildFunctionNodeDefs } from './function-defs.js';
+import { PROPERTY_TYPES, defaultPropertyValue } from './class-defs.js';
+import { applyDynamicNodeDefs } from './dynamic-defs.js';
 
 export function generateId(prefix = 'n') {
   return `${prefix}_${Math.random().toString(36).slice(2, 8)}${Date.now().toString(36).slice(-3)}`;
@@ -27,6 +27,11 @@ export function pinKey(dir, name) {
  * 返回对象为共享只读数据，请勿修改。
  */
 const LAYOUT_CACHE = new Map();
+
+/** 动态节点定义变化后清空布局缓存 */
+export function clearLayoutCache() {
+  LAYOUT_CACHE.clear();
+}
 
 /** 计算节点尺寸与所有端点坐标（相对节点左上角） */
 export function getNodeLayout(node) {
@@ -156,17 +161,24 @@ export function buildConnection(graph, from, to) {
 export function normalizeGraph(raw) {
   const source = raw && typeof raw === 'object' ? raw : {};
 
-  // 先归一化函数元信息，再注册动态节点定义，最后处理各子图连线
+  // 先归一化函数/类元信息，再注册动态节点定义，最后处理各子图连线
   const functions = normalizeFunctions(source.functions);
-  if (functions.length > 0) {
-    setDynamicNodeDefs(buildFunctionNodeDefs(functions));
+  const classes = normalizeClasses(source.classes);
+  if (functions.length > 0 || classes.length > 0) {
+    applyDynamicNodeDefs(functions, classes);
+    clearLayoutCache();
   }
   for (const fn of functions) {
     fn.graph = normalizeScope(fn.graph, { singleTrigger: true });
   }
+  for (const cls of classes) {
+    for (const method of cls.methods) {
+      method.graph = normalizeScope(method.graph, { singleTrigger: true });
+    }
+  }
 
   const scope = normalizeScope(source);
-  return { ...scope, functions };
+  return { ...scope, functions, classes };
 }
 
 function normalizeSignature(list, prefix) {
@@ -205,6 +217,96 @@ function normalizeFunctions(list) {
         inputs: normalizeSignature(rawFn.inputs, 'i'),
         outputs: normalizeSignature(rawFn.outputs, 'o'),
         graph: rawFn.graph && typeof rawFn.graph === 'object' ? rawFn.graph : {},
+      };
+    })
+    .filter(Boolean);
+}
+
+function normalizeProperties(list) {
+  if (!Array.isArray(list)) return [];
+  const usedIds = new Set();
+  const usedNames = new Set();
+  return list
+    .map((raw, index) => {
+      if (!raw || typeof raw !== 'object') return null;
+      let id = String(raw.id || '').trim();
+      if (!id || usedIds.has(id)) id = generateId('p');
+      usedIds.add(id);
+
+      let name = String(raw.name || '').trim() || `属性${index + 1}`;
+      if (usedNames.has(name)) {
+        let suffix = 2;
+        while (usedNames.has(`${name}_${suffix}`)) suffix += 1;
+        name = `${name}_${suffix}`;
+      }
+      usedNames.add(name);
+
+      const type = PROPERTY_TYPES.includes(raw.type) ? raw.type : 'string';
+      return {
+        id,
+        name,
+        type,
+        value: defaultPropertyValue(type, raw.value),
+      };
+    })
+    .filter(Boolean);
+}
+
+function normalizeMethods(list) {
+  if (!Array.isArray(list)) return [];
+  const usedIds = new Set();
+  const usedNames = new Set();
+  return list
+    .map((raw, index) => {
+      if (!raw || typeof raw !== 'object') return null;
+      let id = String(raw.id || '').trim();
+      if (!id || usedIds.has(id)) id = generateId('m');
+      usedIds.add(id);
+
+      let name = String(raw.name || '').trim();
+      if (!name || name === 'constructor') name = `方法${index + 1}`;
+      if (usedNames.has(name)) {
+        let suffix = 2;
+        while (usedNames.has(`${name}_${suffix}`)) suffix += 1;
+        name = `${name}_${suffix}`;
+      }
+      usedNames.add(name);
+
+      return {
+        id,
+        name,
+        inputs: normalizeSignature(raw.inputs, 'i'),
+        outputs: normalizeSignature(raw.outputs, 'o'),
+        graph: raw.graph && typeof raw.graph === 'object' ? raw.graph : {},
+      };
+    })
+    .filter(Boolean);
+}
+
+function normalizeClasses(list) {
+  if (!Array.isArray(list)) return [];
+  const usedIds = new Set();
+  const usedNames = new Set();
+  return list
+    .map((raw, index) => {
+      if (!raw || typeof raw !== 'object') return null;
+      let id = String(raw.id || '').trim();
+      if (!id || usedIds.has(id)) id = generateId('cls');
+      usedIds.add(id);
+
+      let name = String(raw.name || '').trim() || `类${index + 1}`;
+      if (usedNames.has(name)) {
+        let suffix = 2;
+        while (usedNames.has(`${name}_${suffix}`)) suffix += 1;
+        name = `${name}_${suffix}`;
+      }
+      usedNames.add(name);
+
+      return {
+        id,
+        name,
+        properties: normalizeProperties(raw.properties),
+        methods: normalizeMethods(raw.methods),
       };
     })
     .filter(Boolean);
