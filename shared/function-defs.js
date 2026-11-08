@@ -44,6 +44,16 @@ export function functionOutputDefName(id) {
   return `fnout:${id}`;
 }
 
+/** 单个输入参数节点（节点标题即参数名） */
+export function functionArgDefName(fnId, entryId) {
+  return `fnarg:${fnId}:${entryId}`;
+}
+
+/** 单个输出参数节点（节点标题即输出名） */
+export function functionRetDefName(fnId, entryId) {
+  return `fnret:${fnId}:${entryId}`;
+}
+
 export function isFunctionNodeName(name) {
   return (
     typeof name === 'string' &&
@@ -112,7 +122,51 @@ export function buildFunctionNodeDefs(functions) {
       ],
     });
 
-    // 函数输入节点：读取参数
+    // 每个输出参数一个独立节点：标题即输出名，接入值后作为函数返回值
+    for (const entry of outputs) {
+      defs.push({
+        name: functionRetDefName(fn.id, entry.id),
+        label: entry.name || '输出',
+        description: `函数输出：${entry.name}`,
+        type: 'function',
+        category: 'io',
+        width: 180,
+        pins: [
+          {
+            name: 'value',
+            kind: 'port',
+            dir: 'in',
+            row: 0,
+            editor: editorForType(entry.type),
+            label: '值',
+          },
+        ],
+      });
+    }
+
+    // 每个输入参数一个独立节点：标题即输入名，输出端可直接连线
+    for (const entry of inputs) {
+      defs.push({
+        name: functionArgDefName(fn.id, entry.id),
+        label: entry.name || '输入',
+        description: `函数输入：${entry.name}`,
+        type: 'logic',
+        category: 'io',
+        width: 180,
+        pins: [
+          {
+            name: 'value',
+            kind: 'port',
+            dir: 'out',
+            row: 0,
+            label: '值',
+            code: () => functionArgName(entry.id),
+          },
+        ],
+      });
+    }
+
+    // 函数输入节点：读取参数（旧版聚合节点，保留兼容）
     defs.push({
       name: functionInputDefName(fn.id),
       label: '函数输入',

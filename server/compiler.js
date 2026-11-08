@@ -322,7 +322,19 @@ export function compileGraph(graph) {
 
   for (const fn of functions) {
     const compiler = new Compiler(fn.graph || {}, { prepares, functionMap });
-    const body = compiler.generateBody();
+    let body = compiler.generateBody();
+
+    // 每个输出参数节点在函数结束时写入返回值
+    const outputPrefix = `fnret:${fn.id}:`;
+    for (const node of fn.graph?.nodes || []) {
+      if (typeof node.name !== 'string' || !node.name.startsWith(outputPrefix)) continue;
+      const entryId = node.name.slice(outputPrefix.length);
+      const entry = (fn.outputs || []).find((item) => item.id === entryId);
+      if (!entry) continue;
+      const value = compiler.getInputCode('value', node.id);
+      body += `__fnResult[${JSON.stringify(entry.id)}] = ${value};\n`;
+    }
+
     const parameters = (fn.inputs || []).map((entry) => functionArgName(entry.id)).join(', ');
     declarations.push(
       `async function ${getFunctionJsName(fn)}(${parameters}) {\n  let __fnResult = {};\n${indent(body, 2)}\n  return __fnResult;\n}`

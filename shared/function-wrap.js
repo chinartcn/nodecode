@@ -5,7 +5,12 @@
 
 import { EXEC_IN, EXEC_OUT, getNodeDef } from './node-defs.js';
 import { generateId, getNodeLayout, getPinLayout } from './graph-utils.js';
-import { functionCallDefName, typeForEditor } from './function-defs.js';
+import {
+  functionArgDefName,
+  functionCallDefName,
+  functionRetDefName,
+  typeForEditor,
+} from './function-defs.js';
 
 function cloneData(data) {
   try {
@@ -67,11 +72,11 @@ export function wrapSelectionAsFunction(graph, selectedIds, name) {
 
   const usedInputNames = new Set();
   const usedOutputNames = new Set();
-  const fninNodeId = generateId('n');
-  const fnoutNodeId = generateId('n');
+  const inputNodes = [];
+  const outputNodes = [];
   const callNodeId = generateId('n');
 
-  // 边界数据输入
+  // 边界数据输入：每个输入参数一个独立节点
   for (const conn of incoming) {
     const pin = pinOf(conn.toNodeId, 'in', conn.toNodePinName);
     if (!pin || pin.kind !== 'port') continue;
@@ -81,10 +86,12 @@ export function wrapSelectionAsFunction(graph, selectedIds, name) {
       type: typeForEditor(pin.editor),
     };
     inputs.push(entry);
+    const inputNodeId = generateId('n');
+    inputNodes.push({ entry, nodeId: inputNodeId });
     fnConnections.push({
       id: generateId('c'),
-      fromNodeId: fninNodeId,
-      fromNodePinName: `i_${entry.id}`,
+      fromNodeId: inputNodeId,
+      fromNodePinName: 'value',
       toNodeId: conn.toNodeId,
       toNodePinName: conn.toNodePinName,
     });
@@ -112,12 +119,15 @@ export function wrapSelectionAsFunction(graph, selectedIds, name) {
       };
       outputs.push(entry);
       outputBySource.set(key, entry);
+
+      const outputNodeId = generateId('n');
+      outputNodes.push({ entry, nodeId: outputNodeId });
       fnConnections.push({
         id: generateId('c'),
         fromNodeId: conn.fromNodeId,
         fromNodePinName: conn.fromNodePinName,
-        toNodeId: fnoutNodeId,
-        toNodePinName: `o_${entry.id}`,
+        toNodeId: outputNodeId,
+        toNodePinName: 'value',
       });
     }
     outerConnections.push({
@@ -178,10 +188,9 @@ export function wrapSelectionAsFunction(graph, selectedIds, name) {
     warnings.push('未找到函数入口执行流，请在函数内部手动连接开始节点');
   }
 
-  let exitSource = null;
+  // 输出参数使用独立节点，不需要执行流终点
   if (outgoingExec.length) {
     const conn = outgoingExec[0];
-    exitSource = { nodeId: conn.fromNodeId, pinName: conn.fromNodePinName };
     outerConnections.push({
       id: generateId('c'),
       fromNodeId: callNodeId,
@@ -189,33 +198,6 @@ export function wrapSelectionAsFunction(graph, selectedIds, name) {
       toNodeId: conn.toNodeId,
       toNodePinName: conn.toNodePinName,
     });
-  } else if (outputs.length) {
-    for (const node of selected) {
-      const layout = getNodeLayout(node);
-      const execOut = layout?.pins.find((pin) => pin.dir === 'out' && pin.kind === 'exec');
-      if (!execOut) continue;
-      const hasInternalOut = internal.some(
-        (conn) => conn.fromNodeId === node.id && conn.fromNodePinName === execOut.name
-      );
-      if (!hasInternalOut) {
-        exitSource = { nodeId: node.id, pinName: execOut.name };
-        break;
-      }
-    }
-  }
-
-  if (outputs.length) {
-    if (exitSource) {
-      fnConnections.push({
-        id: generateId('c'),
-        fromNodeId: exitSource.nodeId,
-        fromNodePinName: exitSource.pinName,
-        toNodeId: fnoutNodeId,
-        toNodePinName: EXEC_IN,
-      });
-    } else {
-      warnings.push('输出节点未接入执行流，请在函数内部手动连接');
-    }
   }
 
   // 复制内部用到的变量
@@ -257,22 +239,22 @@ export function wrapSelectionAsFunction(graph, selectedIds, name) {
     },
     ...innerNodes,
   ];
-  if (inputs.length) {
+  inputNodes.forEach((item, index) => {
     fnNodes.push({
-      id: fninNodeId,
-      name: `fnin:${fnId}`,
-      position: { x: bounds.minX - 250, y: bounds.minY + 40 },
+      id: item.nodeId,
+      name: functionArgDefName(fnId, item.entry.id),
+      position: { x: bounds.minX - 250, y: bounds.minY + 40 + index * 110 },
       data: {},
     });
-  }
-  if (outputs.length) {
+  });
+  outputNodes.forEach((item, index) => {
     fnNodes.push({
-      id: fnoutNodeId,
-      name: `fnout:${fnId}`,
-      position: { x: bounds.maxX + 60, y: bounds.minY + 40 },
+      id: item.nodeId,
+      name: functionRetDefName(fnId, item.entry.id),
+      position: { x: bounds.maxX + 70, y: bounds.minY + 40 + index * 110 },
       data: {},
     });
-  }
+  });
 
   const functionDef = {
     id: fnId,

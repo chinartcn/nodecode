@@ -6,10 +6,12 @@ import {
   getVisibleNodeDefs,
   isValidIdentifier,
 } from '/shared/node-defs.js';
-import { generateId, getPinLayout, normalizeGraph } from '/shared/graph-utils.js';
+import { generateId, getNodeLayout, getPinLayout, normalizeGraph } from '/shared/graph-utils.js';
 import {
   applyFunctionNodeDefs,
+  functionArgDefName,
   functionCallDefName,
+  functionRetDefName,
 } from '/shared/function-defs.js';
 import { wrapSelectionAsFunction } from '/shared/function-wrap.js';
 import { BlueprintEditor } from './editor.js';
@@ -203,6 +205,8 @@ function loadWorkspace(rawGraph, options = {}) {
     functions: normalized.functions || [],
   };
   applyFunctionNodeDefs(workspace.functions);
+  for (const fn of workspace.functions) syncSignatureNodes(fn);
+  pruneAllConnections();
   currentScope = 'main';
   editor.setGraph(workspace.main, { recordHistory: false });
   editor.clearHistory();
@@ -263,6 +267,7 @@ function enterScope(scopeId) {
 
   currentScope = scopeId;
   applyFunctionNodeDefs(workspace.functions);
+  if (fn) syncSignatureNodes(fn);
   editor.setGraph(scopeId === 'main' ? workspace.main : fn.graph, {
     fit: true,
     recordHistory: false,
@@ -284,10 +289,14 @@ function getPaletteDefs() {
   if (currentScope !== 'main') {
     const fn = workspace.functions.find((item) => item.id === currentScope);
     if (fn) {
-      const inputDef = getNodeDef(`fnin:${fn.id}`);
-      const outputDef = getNodeDef(`fnout:${fn.id}`);
-      if (inputDef) defs.push(inputDef);
-      if (outputDef) defs.push(outputDef);
+      for (const entry of fn.inputs || []) {
+        const def = getNodeDef(functionArgDefName(fn.id, entry.id));
+        if (def) defs.push(def);
+      }
+      for (const entry of fn.outputs || []) {
+        const def = getNodeDef(functionRetDefName(fn.id, entry.id));
+        if (def) defs.push(def);
+      }
     }
   }
 
@@ -568,6 +577,116 @@ function addSignatureEntry(kind) {
   renderSignatureRows(kind);
 }
 
+/** 根据签名自动补齐/清理函数内部的输入输出节点，并迁移旧版聚合节点 */
+function syncSignatureNodes(fn) {
+  if (!fn) return;
+  if (!fn.graph) fn.graph = { nodes: [], connections: [], variables: [] };
+  const graph = fn.graph;
+  graph.nodes = graph.nodes || [];
+  graph.connections = graph.connections || [];
+
+  const minX = graph.nodes.length ? Math.min(...graph.nodes.map((node) => node.position.x)) : 40;
+  const minY = graph.nodes.length ? Math.min(...graph.nodes.map((node) => node.position.y)) : 60;
+  const maxX = graph.nodes.length
+    ? Math.max(
+        ...graph.nodes.map(
+          (node) => node.position.x + (getNodeLayout(node)?.width || 180)
+        )
+      )
+    : 260;
+
+  (fn.inputs || []).forEach((entry, index) => {
+    const name = functionArgDefName(fn.id, entry.id);
+    if (!graph.nodes.some((node) => node.name === name)) {
+      graph.nodes.push({
+        id: generateId('n'),
+        name,
+        position: { x: minX - 260, y: minY + 40 + index * 110 },
+        data: {},
+      });
+    }
+  });
+
+  (fn.outputs || []).forEach((entry, index) => {
+    const name = functionRetDefName(fn.id, entry.id);
+    if (!graph.nodes.some((node) => node.name === name)) {
+      graph.nodes.push({
+        id: generateId('n'),
+        name,
+        position: { x: maxX + 80, y: minY + 40 + index * 110 },
+        data: {},
+      });
+    }
+  });
+
+  // 迁移旧版聚合输入节点
+  const legacyIn = graph.nodes.find((node) => node.name === `fnin:${fn.id}`);
+  if (legacyIn) {
+    const outgoing = graph.connections.filter((conn) => conn.fromNodeId === legacyIn.id);
+    for (const conn of outgoing) {
+      if (!conn.fromNodePinName.startsWith('i_')) continue;
+      const entryId = conn.fromNodePinName.slice(2);
+      const target = graph.nodes.find(
+        (node) => node.name === functionArgDefName(fn.id, entryId)
+      );
+      if (target) {
+        graph.connections.push({
+          id: generateId('c'),
+          fromNodeId: target.id,
+          fromNodePinName: 'value',
+          toNodeId: conn.toNodeId,
+          toNodePinName: conn.toNodePinName,
+        });
+      }
+    }
+    graph.nodes = graph.nodes.filter((node) => node.id !== legacyIn.id);
+    graph.connections = graph.connections.filter(
+      (conn) => conn.fromNodeId !== legacyIn.id && conn.toNodeId !== legacyIn.id
+    );
+  }
+
+  // 迁移旧版聚合输出节点
+  const legacyOut = graph.nodes.find((node) => node.name === `fnout:${fn.id}`);
+  if (legacyOut) {
+    const incoming = graph.connections.filter((conn) => conn.toNodeId === legacyOut.id);
+    for (const conn of incoming) {
+      if (!conn.toNodePinName.startsWith('o_')) continue;
+      const entryId = conn.toNodePinName.slice(2);
+      const target = graph.nodes.find(
+        (node) => node.name === functionRetDefName(fn.id, entryId)
+      );
+      if (target) {
+        graph.connections.push({
+          id: generateId('c'),
+          fromNodeId: conn.fromNodeId,
+          fromNodePinName: conn.fromNodePinName,
+          toNodeId: target.id,
+          toNodePinName: 'value',
+        });
+      }
+    }
+    graph.nodes = graph.nodes.filter((node) => node.id !== legacyOut.id);
+    graph.connections = graph.connections.filter(
+      (conn) => conn.fromNodeId !== legacyOut.id && conn.toNodeId !== legacyOut.id
+    );
+  }
+
+  // 删除签名中已移除的参数节点
+  const validNames = new Set([
+    ...(fn.inputs || []).map((entry) => functionArgDefName(fn.id, entry.id)),
+    ...(fn.outputs || []).map((entry) => functionRetDefName(fn.id, entry.id)),
+  ]);
+  graph.nodes = graph.nodes.filter((node) => {
+    if (
+      node.name.startsWith(`fnarg:${fn.id}:`) ||
+      node.name.startsWith(`fnret:${fn.id}:`)
+    ) {
+      return validNames.has(node.name);
+    }
+    return true;
+  });
+}
+
 function saveSignature() {
   const fn = workspace.functions.find((item) => item.id === signatureFunctionId);
   if (!fn) {
@@ -598,6 +717,7 @@ function saveSignature() {
   }));
 
   applyFunctionNodeDefs(workspace.functions);
+  syncSignatureNodes(fn);
   pruneAllConnections();
 
   const target =
@@ -853,25 +973,7 @@ function renderPalette() {
     item.append(dot, meta, plus);
     item.addEventListener('click', () => {
       const node = editor.addNode(def.name);
-      if (!node) return;
-      toast(`已添加 ${def.label}`);
-
-      if (def.name.startsWith('fnin:') || def.name.startsWith('fnout:')) {
-        const fnId = def.name.split(':')[1];
-        const fn = workspace.functions.find((item) => item.id === fnId);
-        const isInput = def.name.startsWith('fnin:');
-        if (fn && !((isInput ? fn.inputs : fn.outputs) || []).length) {
-          setTimeout(
-            () =>
-              toast(
-                isInput
-                  ? '当前函数还没有输入参数，可在菜单 → 函数管理中设置'
-                  : '当前函数还没有输出参数，可在菜单 → 函数管理中设置'
-              ),
-            1800
-          );
-        }
-      }
+      if (node) toast(`已添加 ${def.label}`);
     });
     container.append(item);
   }
