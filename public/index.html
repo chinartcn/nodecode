@@ -43,6 +43,12 @@
           <button id="zoom-out" aria-label="缩小">－</button>
         </div>
 
+        <div class="canvas-tools" id="canvas-tools">
+          <button id="btn-undo" aria-label="撤销" title="撤销">↶</button>
+          <button id="btn-redo" aria-label="重做" title="重做">↷</button>
+          <button id="btn-marquee" aria-label="框选模式" title="框选模式">▭</button>
+        </div>
+
         <button class="fab" id="btn-add" aria-label="添加节点">＋</button>
 
         <div class="selection-bar" id="selection-bar" hidden>
@@ -51,6 +57,14 @@
           <button id="selection-edit" class="mini-btn">编辑</button>
           <button id="selection-delete" class="mini-btn danger">删除</button>
           <button id="selection-close" class="icon-mini" aria-label="取消选择">×</button>
+        </div>
+
+        <div class="multi-toolbar" id="multi-toolbar" hidden>
+          <span class="multi-count" id="multi-count">0 个</span>
+          <button id="multi-copy">复制</button>
+          <button id="multi-paste">粘贴</button>
+          <button id="multi-delete" class="danger">删除</button>
+          <button id="multi-clear">取消</button>
         </div>
 
         <div class="tip" id="tip">单指拖动平移 · 双指缩放 · 点按端点连线</div>
@@ -63,9 +77,13 @@
         <div class="sheet-head">
           <div>
             <h2>添加节点</h2>
-            <p class="sub">点按节点添加到画布中央</p>
+            <p class="sub">点按节点添加到画布，可连续添加</p>
           </div>
-          <button class="text-btn" data-close>关闭</button>
+          <div class="head-actions">
+            <button class="text-btn" id="palette-columns">双列</button>
+            <button class="text-btn" id="palette-height">1/4</button>
+            <button class="text-btn" data-close>关闭</button>
+          </div>
         </div>
         <div class="sheet-body">
           <input

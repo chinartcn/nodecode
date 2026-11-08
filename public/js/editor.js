@@ -25,6 +25,8 @@ const FONT_STACK =
 const MIN_SCALE = 0.3;
 const MAX_SCALE = 2.4;
 const PIN_HIT_RADIUS = 22;
+const MAX_HISTORY = 60;
+const HISTORY_GROUP_MS = 800;
 
 const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
 
@@ -51,6 +53,9 @@ export class BlueprintEditor {
     this._rect = { left: 0, top: 0 };
 
     this.selectedId = null;
+    this.selectedIds = new Set();
+    this.selectionMode = false;
+    this.marquee = null;
     this.pending = null;
     this.pointers = new Map();
     this.down = null;
@@ -61,6 +66,15 @@ export class BlueprintEditor {
     // 底部被悬浮面板遮挡的高度，用于把新节点放在可见区域中央
     this.bottomInset = 0;
     this._raf = null;
+
+    // 撤销 / 重做 / 复制粘贴
+    this._history = [];
+    this._future = [];
+    this._historyGroup = null;
+    this._historyTime = 0;
+    this._dragSnapshot = null;
+    this._clipboard = null;
+    this._pasteCount = 0;
 
     // 性能相关缓存
     this._textCache = new Map();
@@ -77,34 +91,70 @@ export class BlueprintEditor {
   /* ---------------- 对外方法 ---------------- */
 
   setGraph(graph, options = {}) {
+    const before = options.recordHistory === false ? null : this._snapshot();
     this.graph = normalizeGraph(graph);
     this.selectedId = null;
+    this.selectedIds.clear();
     this.pending = null;
+    this.marquee = null;
     this.down = null;
     this.pointers.clear();
     this._connIndexDirty = true;
     this.dirty = true;
     this.options.onHint?.(null);
     if (options.fit !== false) this.fitView();
-    this.options.onSelect?.(null);
+    if (before === null) {
+      this._historyGroup = null;
+      this._notifyHistory();
+    } else {
+      this._recordHistory(before);
+    }
+    this._notifySelection();
   }
 
   getGraph() {
     return JSON.parse(JSON.stringify(this.graph));
   }
 
-  getSelectedNode() {
-    return this.graph.nodes.find((node) => node.id === this.selectedId) || null;
-  }
-
   getNode(nodeId) {
     return this.graph.nodes.find((node) => node.id === nodeId) || null;
   }
 
+  getSelectedNode() {
+    if (!this.selectedId) return null;
+    return this.getNode(this.selectedId);
+  }
+
+  getSelectedNodes() {
+    return this.graph.nodes.filter((node) => this.selectedIds.has(node.id));
+  }
+
   selectNode(nodeId) {
-    this.selectedId = nodeId;
+    this.selectedId = nodeId || null;
+    this.selectedIds.clear();
+    if (nodeId) this.selectedIds.add(nodeId);
     this.dirty = true;
-    this.options.onSelect?.(this.getSelectedNode());
+    this._notifySelection();
+  }
+
+  selectNodes(ids) {
+    const next = new Set();
+    for (const id of ids) {
+      const node = this.getNode(id);
+      if (node && getNodeDef(node.name)?.type !== 'begin') next.add(id);
+    }
+    this.selectedIds = next;
+    this.selectedId = next.size === 1 ? Array.from(next)[0] : null;
+    this.dirty = true;
+    this._notifySelection();
+  }
+
+  clearSelection() {
+    this.selectedId = null;
+    this.selectedIds.clear();
+    this.marquee = null;
+    this.dirty = true;
+    this._notifySelection();
   }
 
   isPinConnected(nodeId, pinName, dir) {
@@ -116,8 +166,10 @@ export class BlueprintEditor {
   }
 
   setVariables(variables) {
+    const before = this._snapshot();
     this.graph.variables = Array.isArray(variables) ? variables : [];
     this.dirty = true;
+    this._recordHistory(before);
     this.notifyChange();
     this.options.onStructure?.();
   }
@@ -129,6 +181,7 @@ export class BlueprintEditor {
   addNode(name, extraData = {}) {
     const def = getNodeDef(name);
     if (!def) return null;
+    const before = this._snapshot();
     const layout = getNodeLayout({ name });
     const height = layout ? layout.height : 120;
     // 在未被底部悬浮面板遮挡的区域中央添加节点
@@ -146,11 +199,10 @@ export class BlueprintEditor {
       data: { ...(def.defaults || {}), ...extraData },
     };
     this.graph.nodes.push(node);
-    this.selectedId = node.id;
-    this.dirty = true;
+    this._recordHistory(before);
+    this.selectNode(node.id);
     this.notifyChange();
     this.options.onStructure?.();
-    this.options.onSelect?.(node);
     return node;
   }
 
@@ -158,43 +210,241 @@ export class BlueprintEditor {
     const node = this.getNode(nodeId);
     if (!node) return false;
     if (getNodeDef(node.name)?.type === 'begin') return false;
+    const before = this._snapshot();
     this.graph.nodes = this.graph.nodes.filter((item) => item.id !== nodeId);
     this.graph.connections = this.graph.connections.filter(
       (conn) => conn.fromNodeId !== nodeId && conn.toNodeId !== nodeId
     );
+    this.selectedIds.delete(nodeId);
     if (this.selectedId === nodeId) this.selectedId = null;
     this._connIndexDirty = true;
     this.dirty = true;
+    this._recordHistory(before);
     this.notifyChange();
     this.options.onStructure?.();
-    this.options.onSelect?.(null);
+    this._notifySelection();
     return true;
   }
 
   updateNodeData(nodeId, key, value) {
     const node = this.getNode(nodeId);
     if (!node) return;
+    const before = this._snapshot();
     node.data = { ...(node.data || {}), [key]: value };
     this.dirty = true;
+    // 同一字段连续输入合并为一次撤销记录
+    this._recordHistory(before, `data:${nodeId}:${key}`);
     this.notifyChange();
   }
 
   connect(from, to) {
     const result = buildConnection(this.graph, from, to);
     if (result.error) return { error: result.error };
+    const before = this._snapshot();
     this.graph.connections = result.connections;
     this._connIndexDirty = true;
     this.dirty = true;
+    this._recordHistory(before);
     this.notifyChange();
     this.options.onStructure?.();
     return { ok: true, connection: result.connection };
   }
 
   removeConnection(connectionId) {
+    const before = this._snapshot();
     this.graph.connections = this.graph.connections.filter((conn) => conn.id !== connectionId);
     this._connIndexDirty = true;
     this.dirty = true;
+    this._recordHistory(before);
     this.notifyChange();
+    this.options.onStructure?.();
+  }
+
+  /** 删除当前选中的所有节点（开始节点除外） */
+  deleteSelection() {
+    const nodes = this.getSelectedNodes().filter(
+      (node) => getNodeDef(node.name)?.type !== 'begin'
+    );
+    if (!nodes.length) return false;
+    const before = this._snapshot();
+    const ids = new Set(nodes.map((node) => node.id));
+    this.graph.nodes = this.graph.nodes.filter((node) => !ids.has(node.id));
+    this.graph.connections = this.graph.connections.filter(
+      (conn) => !ids.has(conn.fromNodeId) && !ids.has(conn.toNodeId)
+    );
+    this.selectedIds.clear();
+    this.selectedId = null;
+    this._connIndexDirty = true;
+    this.dirty = true;
+    this._recordHistory(before);
+    this.notifyChange();
+    this.options.onStructure?.();
+    this._notifySelection();
+    return true;
+  }
+
+  copySelection() {
+    const nodes = this.getSelectedNodes().filter(
+      (node) => getNodeDef(node.name)?.type !== 'begin'
+    );
+    if (!nodes.length) return false;
+    const ids = new Set(nodes.map((node) => node.id));
+    const connections = this.graph.connections.filter(
+      (conn) => ids.has(conn.fromNodeId) && ids.has(conn.toNodeId)
+    );
+    this._clipboard = {
+      nodes: JSON.parse(JSON.stringify(nodes)),
+      connections: JSON.parse(JSON.stringify(connections)),
+    };
+    return true;
+  }
+
+  hasClipboard() {
+    return Boolean(this._clipboard && this._clipboard.nodes.length > 0);
+  }
+
+  pasteClipboard() {
+    if (!this.hasClipboard()) return false;
+    const before = this._snapshot();
+    const idMap = new Map();
+    const offset = 36 + (this._pasteCount % 5) * 14;
+    this._pasteCount += 1;
+
+    const newNodes = this._clipboard.nodes.map((source) => {
+      const id = generateId('n');
+      idMap.set(source.id, id);
+      return {
+        id,
+        name: source.name,
+        position: { x: source.position.x + offset, y: source.position.y + offset },
+        data: JSON.parse(JSON.stringify(source.data || {})),
+      };
+    });
+
+    const newConnections = this._clipboard.connections
+      .map((source) => ({
+        id: generateId('c'),
+        fromNodeId: idMap.get(source.fromNodeId),
+        fromNodePinName: source.fromNodePinName,
+        toNodeId: idMap.get(source.toNodeId),
+        toNodePinName: source.toNodePinName,
+      }))
+      .filter((conn) => conn.fromNodeId && conn.toNodeId);
+
+    this.graph.nodes.push(...newNodes);
+    this.graph.connections.push(...newConnections);
+    this.selectedIds = new Set(newNodes.map((node) => node.id));
+    this.selectedId = newNodes.length === 1 ? newNodes[0].id : null;
+    this._connIndexDirty = true;
+    this.dirty = true;
+    this._recordHistory(before);
+    this.notifyChange();
+    this.options.onStructure?.();
+    this._notifySelection();
+    return true;
+  }
+
+  /** 开启/关闭框选模式；关闭时清空选择 */
+  setSelectionMode(enabled) {
+    const next = Boolean(enabled);
+    if (this.selectionMode === next) return;
+    this.selectionMode = next;
+    this.pending = null;
+    this.marquee = null;
+    this.down = null;
+    this.pointers.clear();
+    this.options.onHint?.(null);
+    this.canvas.style.cursor = next ? 'crosshair' : '';
+    if (!next) {
+      this.selectedId = null;
+      this.selectedIds.clear();
+    }
+    this.dirty = true;
+    this.options.onModeChange?.(next);
+    this._notifySelection();
+  }
+
+  /* ---------------- 历史记录 ---------------- */
+
+  _snapshot() {
+    return JSON.stringify({
+      nodes: this.graph.nodes,
+      connections: this.graph.connections,
+      variables: this.graph.variables,
+    });
+  }
+
+  _recordHistory(before, groupKey = null) {
+    if (!before) return;
+    const now = Date.now();
+    const sameGroup =
+      Boolean(groupKey) &&
+      this._historyGroup === groupKey &&
+      now - this._historyTime < HISTORY_GROUP_MS;
+    this._historyTime = now;
+    this._historyGroup = groupKey;
+    if (sameGroup) return;
+
+    const current = this._snapshot();
+    if (current === before) return;
+    this._history.push(before);
+    if (this._history.length > MAX_HISTORY) this._history.shift();
+    this._future.length = 0;
+    this._notifyHistory();
+  }
+
+  _notifyHistory() {
+    this.options.onHistory?.({ canUndo: this.canUndo(), canRedo: this.canRedo() });
+  }
+
+  _notifySelection() {
+    this.options.onSelect?.(this.getSelectedNode());
+  }
+
+  canUndo() {
+    return this._history.length > 0;
+  }
+
+  canRedo() {
+    return this._future.length > 0;
+  }
+
+  undo() {
+    if (!this._history.length) return false;
+    const current = this._snapshot();
+    const state = this._history.pop();
+    this._future.push(current);
+    this._applySnapshot(state);
+    this.notifyChange();
+    this._notifyHistory();
+    return true;
+  }
+
+  redo() {
+    if (!this._future.length) return false;
+    const current = this._snapshot();
+    const state = this._future.pop();
+    this._history.push(current);
+    if (this._history.length > MAX_HISTORY) this._history.shift();
+    this._applySnapshot(state);
+    this.notifyChange();
+    this._notifyHistory();
+    return true;
+  }
+
+  _applySnapshot(serialized) {
+    this.graph = normalizeGraph(JSON.parse(serialized));
+    this.selectedId = null;
+    this.selectedIds.clear();
+    this.pending = null;
+    this.marquee = null;
+    this.down = null;
+    this.pointers.clear();
+    this._connIndexDirty = true;
+    this.dirty = true;
+    this._historyGroup = null;
+    this.options.onHint?.(null);
+    this._notifySelection();
     this.options.onStructure?.();
   }
 
@@ -273,15 +523,6 @@ export class BlueprintEditor {
       window.visualViewport.addEventListener('resize', this._onResize);
     }
 
-    window.addEventListener('keydown', (event) => {
-      if (event.key === 'Delete' && this.selectedId) {
-        const node = this.getNode(this.selectedId);
-        if (node && getNodeDef(node.name)?.type !== 'begin') {
-          this.deleteNode(this.selectedId);
-        }
-      }
-    });
-
     // 后台挂起后 canvas 缓冲区可能被浏览器丢弃，回到前台必须强制重绘
     document.addEventListener('visibilitychange', () => {
       if (document.visibilityState === 'visible') {
@@ -347,6 +588,23 @@ export class BlueprintEditor {
     }
     if (this.pointers.size > 2) return;
 
+    // 框选模式：单指拖动画出选择框，禁止平移与节点拖动
+    if (this.selectionMode) {
+      this.pending = null;
+      this.marquee = null;
+      this.options.onHint?.(null);
+      this.down = {
+        pointerId: event.pointerId,
+        mode: 'marquee',
+        start: this.screenToWorld(point.x, point.y),
+        last: point,
+        moved: 0,
+        selectionStarted: false,
+      };
+      this.dirty = true;
+      return;
+    }
+
     const hit = this._hitTest(point.x, point.y);
 
     if (this.pending) {
@@ -362,6 +620,8 @@ export class BlueprintEditor {
       this._beginPending(hit);
       this.down = { pointerId: event.pointerId, mode: 'pin', start: point, last: point, moved: 0 };
     } else if (hit.type === 'node') {
+      // 记录拖动前的状态，松手时生成一条撤销记录
+      this._dragSnapshot = this._snapshot();
       // 置顶
       const index = this.graph.nodes.findIndex((node) => node.id === hit.nodeId);
       if (index >= 0) {
@@ -418,6 +678,23 @@ export class BlueprintEditor {
     drag.moved += Math.hypot(dx, dy);
     drag.last = point;
 
+    if (drag.mode === 'marquee') {
+      if (drag.moved > 6) {
+        if (!drag.selectionStarted) {
+          drag.selectionStarted = true;
+          this.selectedId = null;
+          this.selectedIds.clear();
+        }
+        this.marquee = {
+          start: drag.start,
+          current: this.screenToWorld(point.x, point.y),
+        };
+        this._updateMarqueeSelection();
+      }
+      this.dirty = true;
+      return;
+    }
+
     if (drag.mode === 'pan') {
       this.view.x += dx;
       this.view.y += dy;
@@ -451,6 +728,21 @@ export class BlueprintEditor {
     const point = this._screen(event);
     const isTap = drag.moved < 8;
 
+    if (drag.mode === 'marquee') {
+      if (isTap) {
+        this.marquee = null;
+        const hit = this._hitTest(point.x, point.y);
+        if (hit.type === 'node' || hit.type === 'pin') this.selectNode(hit.nodeId);
+        else this.selectNode(null);
+      } else {
+        this._updateMarqueeSelection();
+        this.marquee = null;
+        this._notifySelection();
+      }
+      this.dirty = true;
+      return;
+    }
+
     if (drag.mode === 'pin') {
       const hit = this._hitTest(point.x, point.y);
       if (!isTap && hit.type === 'pin') {
@@ -463,7 +755,13 @@ export class BlueprintEditor {
         this.cancelPending();
       }
     } else if (drag.mode === 'node') {
-      if (!isTap) this.notifyChange();
+      if (!isTap) {
+        if (this._dragSnapshot) {
+          this._recordHistory(this._dragSnapshot, `move:${drag.nodeId}`);
+        }
+        this.notifyChange();
+      }
+      this._dragSnapshot = null;
     } else if (drag.mode === 'connection') {
       if (isTap) this.options.onConnectionTap?.(drag.connectionId);
     } else if (drag.mode === 'pan') {
@@ -478,7 +776,10 @@ export class BlueprintEditor {
   _onPointerCancel(event) {
     this.pointers.delete(event.pointerId);
     if (this.pointers.size < 2) this.pinch = null;
-    if (this.down && this.down.pointerId === event.pointerId) this.down = null;
+    if (this.down && this.down.pointerId === event.pointerId) {
+      if (this.down.mode === 'marquee') this.marquee = null;
+      this.down = null;
+    }
     this.dirty = true;
   }
 
@@ -510,6 +811,7 @@ export class BlueprintEditor {
       startScale: this.view.scale,
       worldMid: this.screenToWorld(mid.x, mid.y),
     };
+    this.marquee = null;
     this.cancelPending();
   }
 
@@ -578,6 +880,37 @@ export class BlueprintEditor {
     this.dirty = true;
     if (result.error) this.options.onHint?.(result.error, 'error');
     else this.options.onHint?.(null);
+  }
+
+  /** 根据框选矩形更新选中节点集合（不触发 DOM 回调，松手时再通知） */
+  _updateMarqueeSelection() {
+    if (!this.marquee) return;
+    const { start, current } = this.marquee;
+    const left = Math.min(start.x, current.x);
+    const right = Math.max(start.x, current.x);
+    const top = Math.min(start.y, current.y);
+    const bottom = Math.max(start.y, current.y);
+    const ids = [];
+
+    for (const node of this.graph.nodes) {
+      if (getNodeDef(node.name)?.type === 'begin') continue;
+      const layout = getNodeLayout(node);
+      if (!layout) continue;
+      const nodeRight = node.position.x + layout.width;
+      const nodeBottom = node.position.y + layout.height;
+      if (
+        node.position.x <= right &&
+        nodeRight >= left &&
+        node.position.y <= bottom &&
+        nodeBottom >= top
+      ) {
+        ids.push(node.id);
+      }
+    }
+
+    this.selectedIds = new Set(ids);
+    this.selectedId = ids.length === 1 ? ids[0] : null;
+    this.dirty = true;
   }
 
   /* ---------------- 内部：命中检测 ---------------- */
@@ -721,6 +1054,27 @@ export class BlueprintEditor {
       this._drawNode(ctx, node, layout);
     }
 
+    this._drawMarquee(ctx);
+
+    ctx.restore();
+  }
+
+  _drawMarquee(ctx) {
+    if (!this.marquee) return;
+    const { start, current } = this.marquee;
+    const left = Math.min(start.x, current.x);
+    const top = Math.min(start.y, current.y);
+    const width = Math.abs(current.x - start.x);
+    const height = Math.abs(current.y - start.y);
+    const unit = 1 / this.view.scale;
+
+    ctx.save();
+    ctx.fillStyle = 'rgba(77, 163, 255, 0.12)';
+    ctx.strokeStyle = 'rgba(77, 163, 255, 0.95)';
+    ctx.lineWidth = 1.5 * unit;
+    ctx.setLineDash([6 * unit, 5 * unit]);
+    ctx.fillRect(left, top, width, height);
+    ctx.strokeRect(left, top, width, height);
     ctx.restore();
   }
 
@@ -793,8 +1147,7 @@ export class BlueprintEditor {
 
       const isExec = fromPin.kind === 'exec';
       const active =
-        this.selectedId &&
-        (conn.fromNodeId === this.selectedId || conn.toNodeId === this.selectedId);
+        this.selectedIds.has(conn.fromNodeId) || this.selectedIds.has(conn.toNodeId);
 
       ctx.beginPath();
       const control = Math.max(40, Math.abs(toX - fromX) * 0.5);
@@ -861,7 +1214,7 @@ export class BlueprintEditor {
   _drawNode(ctx, node, layout) {
     const { x, y } = node.position;
     const { width, height, def } = layout;
-    const selected = node.id === this.selectedId;
+    const selected = this.selectedIds.has(node.id);
 
     // 选中光晕用描边代替 shadowBlur（后者在移动端开销很高）
     if (selected) {

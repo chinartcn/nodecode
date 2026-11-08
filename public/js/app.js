@@ -14,7 +14,7 @@ const canvas = $('canvas');
 
 const editor = new BlueprintEditor(canvas, {
   onChange: markDirty,
-  onSelect: refreshSelectionBar,
+  onSelect: handleSelectionChange,
   onStructure: () => {
     refreshSelectionBar();
     updateStats();
@@ -23,10 +23,14 @@ const editor = new BlueprintEditor(canvas, {
   onConnectionTap: (connectionId) => askDeleteConnection(connectionId),
   onHint: handleHint,
   onHidden: handlePageHidden,
+  onHistory: refreshHistoryButtons,
+  onModeChange: handleSelectionModeChange,
 });
 
 const AUTOSAVE_KEY = 'codeck.autosaveMs';
 const AUTOSAVE_DEFAULT = 30000;
+const PALETTE_COMPACT_KEY = 'codeck.palette.compact';
+const PALETTE_COLUMNS_KEY = 'codeck.palette.columns';
 
 let currentName = '我的蓝图';
 let examples = [];
@@ -37,6 +41,8 @@ let hintTimer = null;
 let lastOutputText = '';
 let lastCode = '';
 let paletteState = { category: 'all', query: '' };
+let paletteCompact = readFlag(PALETTE_COMPACT_KEY);
+let paletteTwoCols = readFlag(PALETTE_COLUMNS_KEY);
 
 let autoSaveMs = readAutoSaveSetting();
 let autoSaveTimer = null;
@@ -51,13 +57,15 @@ async function boot() {
   bindUI();
   setupAutoSave();
   renderPalette();
+  applyPaletteLayout();
+  refreshHistoryButtons();
 
   try {
     const [state, exampleList] = await Promise.all([api.getState(), api.getExamples()]);
     examples = Array.isArray(exampleList) ? exampleList : [];
     currentName = state.name || '我的蓝图';
     $('blueprint-name').value = currentName;
-    editor.setGraph(state.graph);
+    editor.setGraph(state.graph, { recordHistory: false });
     renderExamples();
   } catch (error) {
     toast(`加载失败：${error.message}`);
@@ -105,10 +113,67 @@ function updatePaletteInset() {
   editor.setBottomInset(rect.height + 20);
 }
 
+function readFlag(key) {
+  try {
+    return localStorage.getItem(key) === '1';
+  } catch {
+    return false;
+  }
+}
+
+function writeFlag(key, value) {
+  try {
+    localStorage.setItem(key, value ? '1' : '0');
+  } catch {
+    /* ignore */
+  }
+}
+
+/** 应用节点面板的高度 / 列数偏好 */
+function applyPaletteLayout() {
+  $('sheet-palette').classList.toggle('compact', paletteCompact);
+  $('palette-list').classList.toggle('two-columns', paletteTwoCols);
+  $('palette-height').textContent = paletteCompact ? '1/2' : '1/4';
+  $('palette-columns').textContent = paletteTwoCols ? '单列' : '双列';
+  updatePaletteInset();
+}
+
+function handleSelectionChange() {
+  refreshSelectionBar();
+  refreshMultiToolbar();
+}
+
+function handleSelectionModeChange(enabled) {
+  $('btn-marquee').classList.toggle('active', enabled);
+  refreshMultiToolbar();
+  toast(enabled ? '框选模式已开启：拖动框选节点' : '框选模式已关闭');
+}
+
+function refreshHistoryButtons() {
+  const undo = $('btn-undo');
+  const redo = $('btn-redo');
+  if (!undo || !redo) return;
+  undo.disabled = !editor.canUndo();
+  redo.disabled = !editor.canRedo();
+}
+
+function refreshMultiToolbar() {
+  const toolbar = $('multi-toolbar');
+  if (!toolbar) return;
+  const count = editor.selectedIds.size;
+  const show = editor.selectionMode && count > 0;
+  toolbar.hidden = !show;
+  if (!show) return;
+  $('multi-count').textContent = `${count} 个`;
+  $('multi-copy').disabled = count === 0;
+  $('multi-delete').disabled = count === 0;
+  $('multi-paste').disabled = !editor.hasClipboard();
+}
+
 function refreshSelectionBar() {
   const bar = $('selection-bar');
   const node = editor.getSelectedNode();
-  if (!node || openSheetName) {
+  if (!node || openSheetName || editor.selectionMode) {
     bar.hidden = true;
     return;
   }
@@ -544,7 +609,7 @@ function buildField(node, pin) {
   return wrap;
 }
 
-/* ---------------- 删除操作 ---------------- */
+/* ---------------- 删除操作（不再二次确认，可撤销） ---------------- */
 
 function askDeleteNode(nodeId) {
   const node = editor.getNode(nodeId);
@@ -554,29 +619,15 @@ function askDeleteNode(nodeId) {
     toast('开始节点不能删除');
     return;
   }
-  askConfirm({
-    title: '删除节点',
-    message: `删除「${def.label}」及其所有连线？此操作不可撤销。`,
-    confirmText: '删除',
-    onConfirm: () => {
-      editor.deleteNode(nodeId);
-      if (openSheetName === 'inspector') closeSheet('inspector');
-      toast('已删除节点');
-    },
-  });
+  editor.deleteNode(nodeId);
+  if (openSheetName === 'inspector') closeSheet('inspector');
+  toast('已删除节点，可撤销');
 }
 
 function askDeleteConnection(connectionId) {
   if (!editor.graph.connections.some((conn) => conn.id === connectionId)) return;
-  askConfirm({
-    title: '删除连线',
-    message: '这条连线将被移除，相关节点会恢复为未连接状态。',
-    confirmText: '删除',
-    onConfirm: () => {
-      editor.removeConnection(connectionId);
-      toast('已删除连线');
-    },
-  });
+  editor.removeConnection(connectionId);
+  toast('已删除连线，可撤销');
 }
 
 /* ---------------- 变量 ---------------- */
@@ -630,17 +681,10 @@ function renderVariables() {
     removeButton.className = 'danger';
     removeButton.textContent = '删除';
     removeButton.addEventListener('click', () => {
-      askConfirm({
-        title: '删除变量',
-        message: `删除变量「${variable.name}」？引用它的节点将无法编译。`,
-        confirmText: '删除',
-        onConfirm: () => {
-          editor.setVariables(variables.filter((item) => item.name !== variable.name));
-          renderVariables();
-          updateStats();
-          toast('已删除变量');
-        },
-      });
+      editor.setVariables(variables.filter((item) => item.name !== variable.name));
+      renderVariables();
+      updateStats();
+      toast('已删除变量，可撤销');
     });
 
     ops.append(getButton, setButton, removeButton);
@@ -917,6 +961,41 @@ function bindUI() {
   $('zoom-out').addEventListener('click', () => editor.zoomBy(0.8));
   $('zoom-fit').addEventListener('click', () => editor.fitView());
 
+  $('btn-undo').addEventListener('click', () => editor.undo());
+  $('btn-redo').addEventListener('click', () => editor.redo());
+  $('btn-marquee').addEventListener('click', () => editor.setSelectionMode(!editor.selectionMode));
+
+  $('multi-copy').addEventListener('click', () => {
+    const count = editor.getSelectedNodes().length;
+    if (editor.copySelection()) {
+      toast(`已复制 ${count} 个节点`);
+      refreshMultiToolbar();
+    }
+  });
+  $('multi-paste').addEventListener('click', () => {
+    if (editor.pasteClipboard()) {
+      toast('已粘贴');
+      refreshMultiToolbar();
+    } else {
+      toast('剪贴板为空');
+    }
+  });
+  $('multi-delete').addEventListener('click', () => {
+    if (editor.deleteSelection()) toast('已删除，可撤销');
+  });
+  $('multi-clear').addEventListener('click', () => editor.clearSelection());
+
+  $('palette-height').addEventListener('click', () => {
+    paletteCompact = !paletteCompact;
+    writeFlag(PALETTE_COMPACT_KEY, paletteCompact);
+    applyPaletteLayout();
+  });
+  $('palette-columns').addEventListener('click', () => {
+    paletteTwoCols = !paletteTwoCols;
+    writeFlag(PALETTE_COLUMNS_KEY, paletteTwoCols);
+    applyPaletteLayout();
+  });
+
   $('scrim').addEventListener('click', () => closeSheet());
 
   for (const button of document.querySelectorAll('[data-close]')) {
@@ -1011,7 +1090,47 @@ function bindUI() {
   window.addEventListener('keydown', (event) => {
     if (event.key === 'Escape') {
       if (openSheetName) closeSheet();
+      else if (editor.selectionMode) editor.setSelectionMode(false);
       else editor.cancelPending();
+      return;
+    }
+
+    const target = event.target;
+    if (openSheetName) return;
+    if (target && /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName)) return;
+
+    const meta = event.ctrlKey || event.metaKey;
+    if (meta && event.key.toLowerCase() === 'z') {
+      event.preventDefault();
+      if (event.shiftKey) editor.redo();
+      else editor.undo();
+      return;
+    }
+    if (meta && event.key.toLowerCase() === 'y') {
+      event.preventDefault();
+      editor.redo();
+      return;
+    }
+    if (meta && event.key.toLowerCase() === 'c') {
+      const count = editor.getSelectedNodes().length;
+      if (editor.copySelection()) {
+        toast(`已复制 ${count} 个节点`);
+        refreshMultiToolbar();
+      }
+      return;
+    }
+    if (meta && event.key.toLowerCase() === 'v') {
+      if (editor.pasteClipboard()) {
+        toast('已粘贴');
+        refreshMultiToolbar();
+      } else {
+        toast('剪贴板为空');
+      }
+      return;
+    }
+    if ((event.key === 'Delete' || event.key === 'Backspace') && editor.selectedIds.size > 0) {
+      event.preventDefault();
+      if (editor.deleteSelection()) toast('已删除，可撤销');
     }
   });
 }

@@ -240,6 +240,91 @@ button {
   background: rgba(255, 255, 255, 0.07);
 }
 
+.canvas-tools {
+  position: absolute;
+  top: 10px;
+  left: 12px;
+  z-index: 8;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 4px;
+  background: rgba(21, 29, 39, 0.97);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.35);
+}
+
+.canvas-tools button {
+  width: 38px;
+  height: 36px;
+  border-radius: 9px;
+  font-size: 17px;
+  color: var(--text);
+}
+
+.canvas-tools button:active {
+  background: rgba(255, 255, 255, 0.07);
+}
+
+.canvas-tools button.active {
+  background: rgba(77, 163, 255, 0.2);
+  color: #cfe4ff;
+  box-shadow: inset 0 0 0 1px rgba(77, 163, 255, 0.5);
+}
+
+.canvas-tools button:disabled {
+  opacity: 0.3;
+}
+
+.multi-toolbar {
+  position: absolute;
+  right: 12px;
+  top: 108px;
+  z-index: 8;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 62px;
+  padding: 6px;
+  background: rgba(21, 29, 39, 0.97);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.45);
+}
+
+.multi-toolbar[hidden] {
+  display: none;
+}
+
+.multi-toolbar .multi-count {
+  text-align: center;
+  font-size: 10.5px;
+  color: #9fc8ff;
+  padding: 2px 0 4px;
+}
+
+.multi-toolbar button {
+  height: 38px;
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--text);
+  font-size: 12px;
+}
+
+.multi-toolbar button:active {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.multi-toolbar button.danger {
+  color: #ffb3b3;
+  background: rgba(255, 107, 107, 0.12);
+}
+
+.multi-toolbar button:disabled {
+  opacity: 0.35;
+}
+
 .hintbar {
   position: absolute;
   top: 10px;
@@ -485,6 +570,36 @@ button {
 
 #sheet-palette .sheet-body {
   padding-bottom: 14px;
+}
+
+#sheet-palette.compact {
+  height: clamp(190px, 25dvh, 300px);
+}
+
+#sheet-palette.compact .sheet-head {
+  padding-top: 8px;
+}
+
+#sheet-palette.compact .sheet-head .sub {
+  display: none;
+}
+
+#sheet-palette .head-actions {
+  gap: 4px;
+}
+
+#palette-list.two-columns {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+#palette-list.two-columns .node-item {
+  padding: 10px 11px;
+}
+
+#palette-list.two-columns .plus {
+  display: none;
 }
 
 .sheet.small .sheet-body {
