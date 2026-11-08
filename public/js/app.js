@@ -5,7 +5,9 @@ import {
   getNodeDef,
   getVisibleNodeDefs,
   isValidIdentifier,
+  setExternalNodeDefs,
 } from '/shared/node-defs.js';
+import { serializeNodeDef, validateExternalNodeDefinition } from '/shared/abi.js';
 import { generateId, getNodeLayout, getPinLayout, normalizeGraph } from '/shared/graph-utils.js';
 import {
   applyFunctionNodeDefs,
@@ -21,12 +23,16 @@ const $ = (id) => document.getElementById(id);
 const canvas = $('canvas');
 
 const editor = new BlueprintEditor(canvas, {
-  onChange: markDirty,
-  onSelect: handleSelectionChange,
+  onChange: handleEditorChange,
+  onSelect: () => {
+    handleSelectionChange();
+    emitSdk('select', { scope: currentScope, nodes: editor.getSelectedNodes() });
+  },
   onStructure: () => {
     refreshSelectionBar();
     updateStats();
     refreshInspector();
+    emitSdk('structure', { scope: currentScope });
   },
   onConnectionTap: (connectionId) => askDeleteConnection(connectionId),
   onHint: handleHint,
@@ -61,6 +67,19 @@ let currentScope = 'main';
 let pendingFunctionMode = null;
 let signatureFunctionId = null;
 let signatureDraft = { name: '', inputs: [], outputs: [] };
+let externalNodeDefs = [];
+
+// 浏览器全局 SDK（window.NodeCode）
+const sdkListeners = {
+  change: new Set(),
+  select: new Set(),
+  structure: new Set(),
+  scope: new Set(),
+};
+let sdkReadyResolve = null;
+const sdkReady = new Promise((resolve) => {
+  sdkReadyResolve = resolve;
+});
 
 let autoSaveMs = readAutoSaveSetting();
 let autoSaveTimer = null;
@@ -68,6 +87,132 @@ let pendingChanges = false;
 let changeRevision = 0;
 let saving = false;
 let hiddenSaveInFlight = false;
+
+function handleEditorChange() {
+  markDirty();
+  emitSdk('change', { scope: currentScope });
+}
+
+function emitSdk(event, payload) {
+  const listeners = sdkListeners[event];
+  if (!listeners) return;
+  for (const listener of listeners) {
+    try {
+      listener(payload);
+    } catch (error) {
+      console.error('[NodeCode]', error);
+    }
+  }
+}
+
+function registerClientExternalNode(def) {
+  const result = validateExternalNodeDefinition(def, { allowExisting: true });
+  if (!result.ok) throw new Error(result.errors.join('；'));
+  const existing = getNodeDef(result.node.name);
+  if (existing && !existing.external) {
+    throw new Error(`节点名「${result.node.name}」与内置节点冲突`);
+  }
+  const serialized = serializeNodeDef({ ...result.node, external: true });
+  const index = externalNodeDefs.findIndex((item) => item.name === serialized.name);
+  if (index >= 0) externalNodeDefs[index] = serialized;
+  else externalNodeDefs.push(serialized);
+  setExternalNodeDefs(externalNodeDefs);
+  renderPalette();
+  return serialized;
+}
+
+const NodeCodeAbi = {
+  version: 1,
+  valueTypes: ['string', 'number', 'boolean', 'object', 'array'],
+  editors: ['text', 'number', 'boolean', 'select', 'json', 'code'],
+  validateNode: (def) => validateExternalNodeDefinition(def, { allowExisting: true }),
+  defineNode: (def) => {
+    const result = validateExternalNodeDefinition(def, { allowExisting: true });
+    if (!result.ok) throw new Error(result.errors.join('；'));
+    return result.node;
+  },
+  registerNode: (def) => registerClientExternalNode(def),
+  registerNodes: (defs) => (defs || []).map(registerClientExternalNode),
+  getNodes: () => externalNodeDefs.slice(),
+  load: async (url) => {
+    const module = await import(url);
+    let exported = module.default ?? module.nodes ?? module;
+    if (typeof exported === 'function') exported = await exported(NodeCodeAbi);
+    const list = Array.isArray(exported)
+      ? exported
+      : Array.isArray(exported?.nodes)
+        ? exported.nodes
+        : [exported];
+    return list.filter(Boolean).map(registerClientExternalNode);
+  },
+};
+
+const NodeCodeApi = {
+  version: 1,
+  getGraph: () => editor.getGraph(),
+  getWorkspace: () => getWorkspaceGraph(),
+  loadWorkspace: async (graph) => {
+    loadWorkspace(graph);
+    markDirty();
+    await saveNow();
+    return getWorkspaceGraph();
+  },
+  getScope: () => currentScope,
+  enterScope: (id) => enterScope(id),
+  getFunctions: () =>
+    workspace.functions.map((fn) => ({
+      id: fn.id,
+      name: fn.name,
+      inputs: fn.inputs,
+      outputs: fn.outputs,
+    })),
+  getNodeDefs: () => getPaletteDefs(),
+  getAbi: () => api.getAbi(),
+  getNodeCatalog: () => api.getNodeCatalog(),
+  getSelection: () => editor.getSelectedNodes(),
+  selectNode: (id) => editor.selectNode(id),
+  addNode: (name, data) => editor.addNode(name, data),
+  removeNode: (id) => editor.deleteNode(id),
+  updateNodeData: (id, key, value) => editor.updateNodeData(id, key, value),
+  compile: (graph) => api.compile(graph || getWorkspaceGraph()),
+  run: (graph, timeoutMs) => api.run(graph || getWorkspaceGraph(), timeoutMs ?? 8000),
+  save: async () => {
+    markDirty();
+    await saveNow();
+  },
+  exportJson: () => ({ version: 1, name: currentName, graph: getWorkspaceGraph() }),
+  importJson: async (payload) => {
+    const graph =
+      payload && typeof payload === 'object' && payload.graph && typeof payload.graph === 'object'
+        ? payload.graph
+        : payload;
+    loadWorkspace(graph);
+    if (payload && typeof payload.name === 'string' && payload.name.trim()) {
+      currentName = payload.name.trim();
+      $('blueprint-name').value = currentName;
+    }
+    markDirty();
+    await saveNow();
+    return getWorkspaceGraph();
+  },
+  toast: (message) => toast(String(message)),
+  on: (event, handler) => {
+    if (sdkListeners[event] && typeof handler === 'function') sdkListeners[event].add(handler);
+  },
+  off: (event, handler) => {
+    sdkListeners[event]?.delete(handler);
+  },
+  undo: () => editor.undo(),
+  redo: () => editor.redo(),
+  fitView: () => editor.fitView(),
+};
+
+window.NodeCode = {
+  version: 1,
+  ready: sdkReady,
+  abi: NodeCodeAbi,
+  api: NodeCodeApi,
+};
 
 /* ---------------- 启动 ---------------- */
 
@@ -81,6 +226,20 @@ async function boot() {
   try {
     const [state, exampleList] = await Promise.all([api.getState(), api.getExamples()]);
     examples = Array.isArray(exampleList) ? exampleList : [];
+
+    try {
+      const catalog = await api.getNodeCatalog();
+      const catalogDefs = (catalog.nodes || []).filter((def) => def.external);
+      const byName = new Map(catalogDefs.map((def) => [def.name, def]));
+      for (const def of externalNodeDefs) {
+        if (!byName.has(def.name)) byName.set(def.name, def);
+      }
+      externalNodeDefs = [...byName.values()];
+      setExternalNodeDefs(externalNodeDefs);
+    } catch {
+      /* 节点目录加载失败时保留客户端已注册的扩展节点 */
+    }
+
     currentName = state.name || '我的蓝图';
     $('blueprint-name').value = currentName;
     loadWorkspace(state.graph);
@@ -93,6 +252,7 @@ async function boot() {
   updateScopeBar();
   requestAnimationFrame(() => editor.fitView());
   setTimeout(() => $('tip').classList.add('hide'), 5200);
+  sdkReadyResolve?.(window.NodeCode);
 }
 
 /* ---------------- 面板管理 ---------------- */
@@ -281,10 +441,17 @@ function enterScope(scopeId) {
   refreshSelectionBar();
   refreshMultiToolbar();
   toast(scopeId === 'main' ? '已返回主图' : `进入函数「${fn.name}」`);
+  emitSdk('scope', {
+    id: scopeId,
+    name: scopeId === 'main' ? '主图' : fn.name,
+  });
 }
 
 function getPaletteDefs() {
-  const defs = [...getVisibleNodeDefs()];
+  const defs = [
+    ...getVisibleNodeDefs(),
+    ...externalNodeDefs.filter((def) => !def.hidden),
+  ];
 
   if (currentScope !== 'main') {
     const fn = workspace.functions.find((item) => item.id === currentScope);

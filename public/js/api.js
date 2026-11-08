@@ -22,6 +22,10 @@ export const api = {
   saveState: (payload) =>
     request('/api/state', { method: 'POST', body: JSON.stringify(payload) }),
   getExamples: () => request('/api/examples'),
+  getNodeCatalog: () => request('/api/nodes'),
+  getAbi: () => request('/api/abi'),
+  validateNodeAbi: (node) =>
+    request('/api/abi/validate', { method: 'POST', body: JSON.stringify({ node }) }),
   compile: (graph) => request('/api/compile', { method: 'POST', body: JSON.stringify({ graph }) }),
   run: (graph, timeoutMs = 8000) =>
     request('/api/run', { method: 'POST', body: JSON.stringify({ graph, timeoutMs }) }),

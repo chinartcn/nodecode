@@ -426,6 +426,9 @@ const DEF_MAP = new Map(nodeDefs.map((def) => [def.name, def]));
 // 动态节点定义（用户创建的函数：调用节点、输入节点、输出节点）
 const DYNAMIC_DEFS = new Map();
 
+// 外部扩展节点定义（由 extensions/*.json 通过 ABI 注册）
+const EXTERNAL_DEFS = new Map();
+
 /** 用当前文档中的函数定义重建动态节点注册表 */
 export function setDynamicNodeDefs(defs) {
   DYNAMIC_DEFS.clear();
@@ -434,8 +437,20 @@ export function setDynamicNodeDefs(defs) {
   }
 }
 
+/** 注册外部扩展节点（服务端带 code，客户端只有布局信息） */
+export function setExternalNodeDefs(defs) {
+  EXTERNAL_DEFS.clear();
+  for (const def of defs || []) {
+    if (def && def.name) EXTERNAL_DEFS.set(def.name, def);
+  }
+}
+
+export function getExternalNodeDefs() {
+  return [...EXTERNAL_DEFS.values()];
+}
+
 export function getNodeDef(name) {
-  return DEF_MAP.get(name) || DYNAMIC_DEFS.get(name) || null;
+  return DEF_MAP.get(name) || EXTERNAL_DEFS.get(name) || DYNAMIC_DEFS.get(name) || null;
 }
 
 /** 可在节点面板中展示的节点 */

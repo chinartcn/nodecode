@@ -15,13 +15,27 @@ import { compileGraph } from './compiler.js';
 import { runInSandbox } from './sandbox.js';
 import { loadState, saveState } from './storage.js';
 import { examples } from './examples.js';
+import { loadExtensions } from './extensions.js';
 import { normalizeGraph } from '../shared/graph-utils.js';
+import {
+  buildAbiDocument,
+  serializeNodeDefs,
+  validateExternalNodeDefinition,
+} from '../shared/abi.js';
+import { getExternalNodeDefs, nodeDefs } from '../shared/node-defs.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PUBLIC_DIR = path.join(ROOT, 'public');
 const SHARED_DIR = path.join(ROOT, 'shared');
 const PORT = Number(process.env.PORT) || 5173;
 const HOST = process.env.HOST || '0.0.0.0';
+
+const CORS_PATHS = new Set(['/api/abi', '/api/nodes', '/api/node-defs', '/api/abi/validate']);
+const CORS_HEADERS = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+  'Access-Control-Allow-Headers': 'Content-Type',
+};
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -38,12 +52,13 @@ const MIME = {
   '.txt': 'text/plain; charset=utf-8',
 };
 
-function sendJSON(res, status, data) {
+function sendJSON(res, status, data, extraHeaders = {}) {
   const body = JSON.stringify(data);
   res.writeHead(status, {
     'Content-Type': 'application/json; charset=utf-8',
     'Content-Length': Buffer.byteLength(body),
     'Cache-Control': 'no-store',
+    ...extraHeaders,
   });
   res.end(body);
 }
@@ -78,6 +93,35 @@ function readBody(req, limit = 4 * 1024 * 1024) {
 }
 
 async function handleApi(req, res, pathname) {
+  if (pathname === '/api/abi' && req.method === 'GET') {
+    sendJSON(res, 200, buildAbiDocument(getExternalNodeDefs()), CORS_HEADERS);
+    return true;
+  }
+
+  if ((pathname === '/api/nodes' || pathname === '/api/node-defs') && req.method === 'GET') {
+    sendJSON(
+      res,
+      200,
+      {
+        abiVersion: 1,
+        nodes: serializeNodeDefs([...nodeDefs, ...getExternalNodeDefs()]),
+      },
+      CORS_HEADERS
+    );
+    return true;
+  }
+
+  if (pathname === '/api/abi/validate' && req.method === 'POST') {
+    const body = await readBody(req);
+    const target =
+      body && typeof body === 'object' && body.node && typeof body.node === 'object'
+        ? body.node
+        : body;
+    const result = validateExternalNodeDefinition(target);
+    sendJSON(res, result.ok ? 200 : 400, result, CORS_HEADERS);
+    return true;
+  }
+
   if (pathname === '/api/health' && req.method === 'GET') {
     sendJSON(res, 200, { ok: true, name: 'codeck-mobile' });
     return true;
@@ -165,12 +209,20 @@ async function serveStatic(res, pathname) {
   }
 }
 
+// 启动前加载 extensions/ 下的外部节点（.json / .js / .mjs）
+await loadExtensions();
+
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
   const pathname = url.pathname;
 
   try {
     if (pathname.startsWith('/api/')) {
+      if (req.method === 'OPTIONS' && CORS_PATHS.has(pathname)) {
+        res.writeHead(204, CORS_HEADERS);
+        res.end();
+        return;
+      }
       const handled = await handleApi(req, res, pathname);
       if (!handled) sendJSON(res, 404, { error: 'Not Found' });
       return;
